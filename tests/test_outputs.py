@@ -134,6 +134,15 @@ class VirtualOutputsTests(unittest.TestCase):
         )
         self.assertIsNone(outputs.gamepad_control(e.EV_KEY, e.BTN_LEFT))
 
+    def test_physical_joystick_codes_have_unique_passthrough_targets(self):
+        outputs = VirtualOutputs(fake_evdev())
+        targets = [
+            outputs.gamepad_control(outputs.evdev.ecodes.EV_KEY, code)
+            for code in range(288, 300)
+        ]
+        self.assertEqual(len(set(targets)), 12)
+        self.assertEqual(targets[-1], ("gamepadButton", "BTN_TL2"))
+
     def test_successful_virtual_writes_are_reported(self):
         emitted = []
         outputs = VirtualOutputs(

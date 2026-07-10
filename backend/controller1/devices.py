@@ -7,6 +7,16 @@ from pathlib import Path
 from typing import Any
 
 
+def canonical_event_name(evdev_module: Any, event_type: int, code: int) -> str:
+    names = evdev_module.ecodes.bytype.get(event_type, {}).get(code, str(code))
+    if not isinstance(names, (list, tuple)):
+        return str(names)
+    if not names:
+        return str(code)
+    categories = {"BTN_JOYSTICK", "BTN_GAMEPAD", "BTN_DIGI", "BTN_WHEEL"}
+    return str(next((name for name in names if name not in categories), names[0]))
+
+
 class DeviceManager:
     def __init__(
         self,
@@ -438,8 +448,7 @@ class DeviceManager:
             self._log("warning", f"pyudev unavailable; using one-second hotplug polling: {error}")
 
     def _event_name(self, event_type: int, code: int) -> str:
-        name = self.evdev.ecodes.bytype.get(event_type, {}).get(code, str(code))
-        return name[0] if isinstance(name, list) else str(name)
+        return canonical_event_name(self.evdev, event_type, code)
 
     def _log(self, level: str, message: str) -> None:
         if self.logger:

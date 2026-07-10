@@ -22,38 +22,52 @@ import {
   FaCheck,
   FaGamepad,
   FaLink,
+  FaPlay,
+  FaSearch,
   FaSlidersH,
+  FaStop,
   FaTrash,
 } from "react-icons/fa";
 import {
   Action,
   Binding,
+  DiscoveryStatus,
   Device,
   InputRef,
   InputSnapshot,
+  LogicalControl,
   OutputCatalog,
   OutputOption,
+  PipelineEntry,
   Profile,
   Status,
   beginCalibration,
+  beginDiscoveryObservation,
   createProfile,
   deleteBinding,
+  deleteLogicalControl,
   finishCalibration,
+  finishDiscoveryObservation,
   getDebugReport,
+  getDiscoveryStatus,
   getOutputCatalog,
+  getPipelineSnapshot,
   getStatus,
   refreshDevices,
   saveBinding,
+  saveLogicalControl,
   setEnabled,
   setOutputNames,
   setProfile,
+  startBindAssist,
+  startDiscovery,
   startLearning,
+  stopBindAssist,
+  stopDiscovery,
 } from "./api";
 import { controllerStyles } from "./styles";
 
 export const CONTROLLER_ROUTE = "/controller1";
-
-type RawInput = InputRef & { value: number };
 
 const EMPTY_SNAPSHOT: InputSnapshot = {
   values: {},
@@ -79,6 +93,82 @@ const AXIS_POSITION_PRESETS = [
 
 const eventKey = (input: InputRef) => `${input.eventType}:${input.code}`;
 const inputType = (input: InputRef) => input.eventType === 3 ? "Axis" : "Button";
+
+const STANDARD_INPUT_NAMES: Record<string, string> = {
+  BTN_SOUTH: "A button",
+  BTN_EAST: "B button",
+  BTN_NORTH: "Y button",
+  BTN_WEST: "X button",
+  BTN_TL: "Left bumper",
+  BTN_TR: "Right bumper",
+  BTN_TL2: "Left trigger",
+  BTN_TR2: "Right trigger",
+  BTN_SELECT: "View button",
+  BTN_START: "Menu button",
+  BTN_MODE: "Guide button",
+  BTN_THUMBL: "Left stick click",
+  BTN_THUMBR: "Right stick click",
+  ABS_X: "Left stick horizontal",
+  ABS_Y: "Left stick vertical",
+  ABS_RX: "Right stick horizontal",
+  ABS_RY: "Right stick vertical",
+  ABS_Z: "Left trigger",
+  ABS_RZ: "Right trigger",
+  ABS_HAT0X: "D-pad horizontal",
+  ABS_HAT0Y: "D-pad vertical",
+};
+
+const STANDARD_INPUT_CODE_NAMES: Record<string, string> = {
+  "1:304": "A button",
+  "1:305": "B button",
+  "1:307": "Y button",
+  "1:308": "X button",
+  "1:310": "Left bumper",
+  "1:311": "Right bumper",
+  "1:312": "Left trigger",
+  "1:313": "Right trigger",
+  "1:314": "View button",
+  "1:315": "Menu button",
+  "1:316": "Guide button",
+  "1:317": "Left stick click",
+  "1:318": "Right stick click",
+  "3:0": "Left stick horizontal",
+  "3:1": "Left stick vertical",
+  "3:2": "Left trigger",
+  "3:3": "Right stick horizontal",
+  "3:4": "Right stick vertical",
+  "3:5": "Right trigger",
+  "3:16": "D-pad horizontal",
+  "3:17": "D-pad vertical",
+};
+
+function friendlyInputName(input: InputRef): string {
+  if (input.eventType === 1 && input.code >= 288 && input.code <= 299) {
+    return `Button ${input.code - 287}`;
+  }
+  const byCode = STANDARD_INPUT_CODE_NAMES[eventKey(input)];
+  if (byCode) return byCode;
+  const known = STANDARD_INPUT_NAMES[input.name];
+  if (known) return known;
+  const tupleAlias = /^\s*[\[(].*,.*[\])]\s*$/.test(input.name);
+  return tupleAlias || !input.name.trim() ? `${inputType(input)} ${input.code}` : input.name;
+}
+
+function actionLabel(action?: Action): string {
+  if (!action) return "Assigned automatically";
+  const output = action.code || action.codes?.join("+") || "Automatic";
+  return `${ACTION_LABELS[action.type]} · ${STANDARD_INPUT_NAMES[output] ?? output}`;
+}
+
+function modeNote(mode: Profile["outputMode"]): string {
+  if (mode === "extended") {
+    return "Extended exposes more virtual controls; games with strict standard-pad support may ignore extras.";
+  }
+  if (mode === "hybrid") {
+    return "Hybrid preserves standard controls and falls back to extended outputs when capacity is reached.";
+  }
+  return "Maximum compatibility. Extra controls fall back to available standard outputs.";
+}
 
 function notifyError(error: unknown) {
   toaster.toast({ title: "Controller1", body: String(error), critical: true });
@@ -126,14 +216,7 @@ function useController() {
         : current);
     });
     const snapshotListener = addEventListener<[InputSnapshot]>("input_snapshot", queueSnapshot);
-    const rawListener = addEventListener<[RawInput]>("raw_input", (input) => {
-      const key = eventKey(input);
-      queueSnapshot({
-        ...latestSnapshot.current,
-        values: { ...latestSnapshot.current.values, [key]: input.value },
-      });
-    });
-    const learnedListener = addEventListener<[RawInput]>("learned_input", (input) => {
+    const learnedListener = addEventListener<[InputRef]>("learned_input", (input) => {
       setLearned((current) => current.some((item) => eventKey(item) === eventKey(input))
         ? current
         : [...current, input]);
@@ -147,7 +230,6 @@ function useController() {
       removeEventListener("status_changed", statusListener);
       removeEventListener("devices_changed", devicesListener);
       removeEventListener("input_snapshot", snapshotListener);
-      removeEventListener("raw_input", rawListener);
       removeEventListener("learned_input", learnedListener);
       removeEventListener("learning_changed", learningListener);
       if (snapshotFrame.current !== null) {
@@ -369,7 +451,7 @@ const AxisCard = memo(function AxisCard({
       onOKActionDescription="Configure mapping"
     >
       <div className="Controller1_CardTitle">
-        <span>{axis.name}</span>
+        <span>{friendlyInputName(input)}</span>
         <span className={`Controller1_Badge ${coverage >= 0.8 ? "Controller1_Badge--good" : ""}`}>
           {Math.round(coverage * 100)}%
         </span>
@@ -417,11 +499,326 @@ const ButtonControl = memo(function ButtonControl({
       onClick={() => onSelect(input)}
       onOKActionDescription="Configure mapping"
     >
-      <div className="Controller1_ButtonName">{button.name}</div>
+      <div className="Controller1_ButtonName">{friendlyInputName(input)}</div>
       <div className="Controller1_Meta">EV_KEY · {button.code}</div>
     </Focusable>
   );
 });
+
+function LogicalControlCard({
+  profileId,
+  control,
+  bindActive,
+  review = false,
+  onSaved,
+  onRefresh,
+  onDeleted,
+}: {
+  profileId: string;
+  control: LogicalControl;
+  bindActive: boolean;
+  review?: boolean;
+  onSaved: (control: LogicalControl) => Promise<void>;
+  onRefresh: () => Promise<unknown>;
+  onDeleted?: () => Promise<void>;
+}) {
+  const defaultName = /^\s*[\[(].*,.*[\])]\s*$/.test(control.name)
+    ? friendlyInputName(control.sources[0] ?? { eventType: 1, code: 0, name: "" })
+    : control.name;
+  const [draft, setDraft] = useState<LogicalControl>({
+    ...control,
+    name: defaultName,
+    positions: control.positions.map((position, index) => ({
+      ...position,
+      label: position.label || `Position ${index + 1}`,
+    })),
+  });
+  const [saving, setSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    setDraft({
+      ...control,
+      name: /^\s*[\[(].*,.*[\])]\s*$/.test(control.name) ? defaultName : control.name,
+      positions: control.positions.map((position, index) => ({
+        ...position,
+        label: position.label || `Position ${index + 1}`,
+      })),
+    });
+  }, [control, defaultName]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSaved({
+        ...draft,
+        name: draft.name.trim() || defaultName || "Control",
+        confirmed: true,
+        positions: draft.positions.map((position, index) => ({
+          ...position,
+          label: position.label.trim() || `Position ${index + 1}`,
+        })),
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleBind = async () => {
+    try {
+      if (bindActive) await stopBindAssist();
+      else await startBindAssist(profileId, control.id);
+      await onRefresh();
+    } catch (error) {
+      notifyError(error);
+    }
+  };
+
+  return (
+    <Focusable
+      className={`Controller1_Card Controller1_LogicalCard ${bindActive ? "Controller1_LogicalCard--binding" : ""}`}
+      flow-children="column"
+    >
+      <div className="Controller1_CardTitle">
+        <span>{review ? "Review discovered control" : draft.name}</span>
+        <span className={`Controller1_Badge ${bindActive ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
+          {bindActive ? <><FaBolt /> Bind assist active</> : draft.kind}
+        </span>
+      </div>
+      {review && !control.confirmed && (
+        <div className="Controller1_ReviewNotice">
+          Check the positions below, then confirm this control.
+        </div>
+      )}
+      <TextField
+        label="Control name"
+        value={draft.name}
+        onChange={(event) => setDraft((current) => ({ ...current, name: event.currentTarget.value }))}
+      />
+      <div className="Controller1_Positions">
+        {draft.positions.map((position, index) => (
+          <div className="Controller1_PositionRow" key={position.id}>
+            <TextField
+              label={`Position ${index + 1}`}
+              value={position.label}
+              onChange={(event) => {
+                const label = event.currentTarget.value;
+                setDraft((current) => ({
+                  ...current,
+                  positions: current.positions.map((item, itemIndex) => itemIndex === index
+                    ? { ...item, label }
+                    : item),
+                }));
+              }}
+            />
+            <div className="Controller1_PositionOutput">{actionLabel(position.action ?? draft.action)}</div>
+          </div>
+        ))}
+      </div>
+      {!draft.action && draft.positions.every((position) => !position.action) && (
+        <div className="Controller1_Subtitle">Outputs are assigned automatically when this control is saved.</div>
+      )}
+      <DialogButton onClick={() => setShowAdvanced((shown) => !shown)}>
+        {showAdvanced ? "Hide details" : "Advanced details"}
+      </DialogButton>
+      {showAdvanced && (
+        <div className="Controller1_AdvancedDetails">
+          {draft.sources.map((source) => (
+            <div key={eventKey(source)}>
+              <strong>{friendlyInputName(source)}</strong>
+              <span> {source.eventType === 3 ? "EV_ABS" : "EV_KEY"} · code {source.code}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="Controller1_Actions">
+        {!review && onDeleted && (
+          <DialogButton onClick={onDeleted}><FaTrash /> Delete</DialogButton>
+        )}
+        {!review && (
+          <DialogButton onClick={toggleBind}>
+            {bindActive ? <><FaStop /> Stop bind assist</> : <><FaPlay /> Bind in game</>}
+          </DialogButton>
+        )}
+        <DialogButton disabled={saving} onClick={save}>
+          {saving
+            ? "Saving…"
+            : review && !control.confirmed
+              ? "Confirm, save, and continue"
+              : review
+                ? "Save and continue"
+                : "Save control"}
+        </DialogButton>
+      </div>
+      {bindActive && (
+        <div className="Controller1_BindBanner">
+          Move a position now. Only that newly moved position is temporarily emitted.
+        </div>
+      )}
+    </Focusable>
+  );
+}
+
+function DiscoverPage({
+  status,
+  reload,
+}: {
+  status: Status;
+  reload: () => Promise<Status>;
+}) {
+  const profile = status.profiles.find((item) => item.id === status.activeProfileId);
+  const [discovery, setDiscovery] = useState<DiscoveryStatus>({
+    active: false,
+    state: "idle",
+    prompt: "",
+    changedInputs: [],
+  });
+  const [busy, setBusy] = useState(false);
+
+  const refreshDiscovery = useCallback(async () => {
+    try {
+      setDiscovery(await getDiscoveryStatus());
+    } catch (error) {
+      notifyError(error);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDiscovery();
+  }, [refreshDiscovery]);
+
+  useEffect(() => {
+    if (!discovery.active && !status.discovering) return;
+    const timer = window.setInterval(() => void refreshDiscovery(), 500);
+    return () => window.clearInterval(timer);
+  }, [discovery.active, refreshDiscovery, status.discovering]);
+
+  const run = async (operation: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await operation();
+      await refreshDiscovery();
+      await reload();
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const begin = () => profile && run(() => startDiscovery(profile.id));
+  const observe = () => run(beginDiscoveryObservation);
+  const finish = () => run(finishDiscoveryObservation);
+  const cancel = () => run(stopDiscovery);
+
+  const saveCandidate = async (candidate: LogicalControl) => {
+    if (!profile) return;
+    await saveLogicalControl(profile.id, candidate);
+    await stopDiscovery();
+    await reload();
+    await startDiscovery(profile.id);
+    await refreshDiscovery();
+  };
+
+  const removeControl = async (controlId: string) => {
+    if (!profile) return;
+    try {
+      await deleteLogicalControl(profile.id, controlId);
+      await reload();
+    } catch (error) {
+      notifyError(error);
+    }
+  };
+
+  if (!profile) return null;
+  const observing = discovery.state === "observing" || discovery.state === "observation";
+  const awaitingMove = discovery.active && !observing && !discovery.candidate;
+
+  return (
+    <Focusable className="Controller1_Content" flow-children="column">
+      <PageHeader
+        title="Discover controls"
+        description="Add one physical control at a time. Controller1 groups every position into one semantic control."
+        badge={<span className="Controller1_Badge"><FaSearch /> {profile.logicalControls.length} controls</span>}
+      />
+
+      {!status.connected ? (
+        <div className="Controller1_Empty">Open Setup and connect a controller before discovery.</div>
+      ) : discovery.candidate ? (
+        <LogicalControlCard
+          profileId={profile.id}
+          control={discovery.candidate}
+          bindActive={false}
+          review
+          onSaved={saveCandidate}
+          onRefresh={reload}
+        />
+      ) : (
+        <div className="Controller1_Card Controller1_Discovery">
+          <div className="Controller1_DiscoveryStep">
+            <span className="Controller1_StepNumber">{discovery.active ? (observing ? "2" : "1") : "1"}</span>
+            <div>
+              <div className="Controller1_CardTitle">
+                {observing ? "Move one control through every position" : "Ready to discover a control"}
+              </div>
+              <div className="Controller1_Subtitle">
+                {discovery.prompt || (observing
+                  ? "Move only the control you are adding, pausing briefly at each position."
+                  : "Start discovery, then move one button, axis, or switch.")}
+              </div>
+            </div>
+          </div>
+          {discovery.changedInputs.length > 0 && (
+            <div className="Controller1_Chips">
+              {discovery.changedInputs.map((input) => (
+                <span className="Controller1_Chip" key={eventKey(input)}>{friendlyInputName(input)}</span>
+              ))}
+            </div>
+          )}
+          <div className="Controller1_Actions">
+            {discovery.active && <DialogButton disabled={busy} onClick={cancel}>Cancel</DialogButton>}
+            {!discovery.active && (
+              <DialogButton disabled={busy || !status.connected} onClick={begin}>Start discovery</DialogButton>
+            )}
+            {awaitingMove && (
+              <DialogButton disabled={busy} onClick={observe}>Begin observation</DialogButton>
+            )}
+            {observing && (
+              <DialogButton disabled={busy || discovery.changedInputs.length === 0} onClick={finish}>
+                Finish and classify
+              </DialogButton>
+            )}
+          </div>
+        </div>
+      )}
+
+      <PageHeader
+        title="Configured controls"
+        description="Each card is saved atomically with all of its semantic positions."
+      />
+      {profile.logicalControls.length === 0 ? (
+        <div className="Controller1_Empty">No semantic controls yet. Start discovery above.</div>
+      ) : (
+        <div className="Controller1_Stack">
+          {profile.logicalControls.map((control) => (
+            <LogicalControlCard
+              key={control.id}
+              profileId={profile.id}
+              control={control}
+              bindActive={status.bindAssisting && status.bindAssistControlId === control.id}
+              onSaved={async (updated) => {
+                await saveLogicalControl(profile.id, updated);
+                await reload();
+              }}
+              onRefresh={reload}
+              onDeleted={() => removeControl(control.id)}
+            />
+          ))}
+        </div>
+      )}
+    </Focusable>
+  );
+}
 
 function CalibrationPage({
   status,
@@ -496,8 +893,8 @@ function CalibrationPage({
     return (
       <div className="Controller1_Content">
         <PageHeader
-          title="Controls"
-          description="Connect a physical controller to inspect and configure its controls."
+          title="Advanced controls"
+          description="Raw calibration and input diagnostics for troubleshooting."
         />
         <div className="Controller1_Empty">Open Setup and connect a controller.</div>
       </div>
@@ -507,16 +904,24 @@ function CalibrationPage({
   return (
     <Focusable className="Controller1_Content" flow-children="column">
       <PageHeader
-        title="Controls"
+        title="Advanced controls"
         description={status.calibrating
           ? "Move every axis through its full travel and press every available button."
-          : "Inspect live input or select a control to configure its mapping."}
+          : "Raw calibration and per-event diagnostics. Use Discover for normal setup."}
         badge={(
           <span className={`Controller1_Badge ${status.calibrating ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
             {status.calibrating ? <><FaBolt /> Recording</> : <><FaCheck /> Ready</>}
           </span>
         )}
       />
+
+      <div className="Controller1_Card">
+        <div className="Controller1_CardTitle">
+          <span>Output strategy</span>
+          <span className="Controller1_Badge">{profile.outputMode}</span>
+        </div>
+        <div className="Controller1_Subtitle">{modeNote(profile.outputMode)}</div>
+      </div>
 
       <div className="Controller1_Card">
         <div className="Controller1_CardTitle">
@@ -612,7 +1017,7 @@ function MappingBuilder({
       ...(continuous ? { source } : {}),
     };
     const binding: Binding = {
-      name: name.trim() || `${source.name} → ${outputCode}`,
+      name: name.trim() || `${friendlyInputName(source)} → ${outputCode}`,
       layer: "base",
       conditions: continuous ? [] : [{
         input: source,
@@ -727,7 +1132,10 @@ function BindingList({
           <div>
             <strong>{binding.name}</strong>
             <div className="Controller1_MappingRoute">
-              <span>{binding.conditions.map((condition) => condition.input.name).join(" + ") || binding.action.source?.name}</span>
+              <span>
+                {binding.conditions.map((condition) => friendlyInputName(condition.input)).join(" + ")
+                  || (binding.action.source ? friendlyInputName(binding.action.source) : "")}
+              </span>
               <span>→</span>
               <span>{ACTION_LABELS[binding.action.type]} · {binding.action.code || binding.action.codes?.join("+")}</span>
             </div>
@@ -795,7 +1203,7 @@ function ControlMappingModal({
             {input.eventType === 3 ? <FaSlidersH /> : <FaGamepad />}
           </div>
           <div className="Controller1_ModalTitle">
-            <h2>{input.name}</h2>
+            <h2>{friendlyInputName(input)}</h2>
             <p>{inputType(input)} · code {input.code} · {profile.name} profile</p>
           </div>
           <span className="Controller1_Badge">
@@ -913,7 +1321,7 @@ function ChordsPage({
   const submit = async () => {
     if (!profile || learned.length < 2 || !outputCode.trim()) return;
     const binding: Binding = {
-      name: name.trim() || `${learned.map((input) => input.name).join(" + ")} → ${outputCode}`,
+      name: name.trim() || `${learned.map(friendlyInputName).join(" + ")} → ${outputCode}`,
       layer: "base",
       conditions: learned.map((input) => ({
         input,
@@ -961,7 +1369,7 @@ function ChordsPage({
           {learned.map((input) => (
             <span className="Controller1_Chip" key={eventKey(input)}>
               {input.eventType === 3 ? <FaSlidersH /> : <FaGamepad />}
-              {input.name}
+              {friendlyInputName(input)}
               <span className="Controller1_Meta">{inputType(input)}</span>
             </span>
           ))}
@@ -972,7 +1380,7 @@ function ChordsPage({
           return (
             <div className="Controller1_Card" key={`${key}:range`}>
               <div className="Controller1_CardTitle">
-                <span>{input.name} active zone</span>
+                <span>{friendlyInputName(input)} active zone</span>
                 <span className="Controller1_Meta">{range[0].toFixed(2)}…{range[1].toFixed(2)}</span>
               </div>
               <SliderField
@@ -1052,6 +1460,83 @@ function ChordsPage({
       </div>
       <PageHeader title="Configured chords" description="All conditions must be active together." />
       <BindingList profileId={profile.id} bindings={chords} onChanged={reload} />
+    </Focusable>
+  );
+}
+
+function TestPage({ status }: { status: Status }) {
+  const [entries, setEntries] = useState<PipelineEntry[]>([]);
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    try {
+      setEntries(await getPipelineSnapshot());
+      setError("");
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 500);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  return (
+    <Focusable className="Controller1_Content" flow-children="column">
+      <PageHeader
+        title="Test pipeline"
+        description="Live physical input → semantic position → virtual output."
+        badge={(
+          <span className={`Controller1_Badge ${status.connected ? "Controller1_Badge--good" : ""}`}>
+            {status.connected ? "Live" : "Disconnected"}
+          </span>
+        )}
+      />
+      {error && <div className="Controller1_Error">Could not read pipeline: {error}</div>}
+      {!error && entries.length === 0 ? (
+        <div className="Controller1_Empty">
+          Move a configured control to see it travel through the pipeline.
+        </div>
+      ) : (
+        <div className="Controller1_Stack" aria-live="polite">
+          {entries.map((entry, index) => {
+            const physical = entry.physical
+              ? friendlyInputName(entry.physical)
+              : "No physical event";
+            const output = entry.virtual
+              ? `${entry.virtual.kind} · ${STANDARD_INPUT_NAMES[entry.virtual.code] ?? entry.virtual.code} · ${entry.virtual.value}`
+              : "No output";
+            return (
+              <div
+                className={`Controller1_PipelineRow ${entry.virtual?.emitted ? "Controller1_PipelineRow--emitted" : ""}`}
+                key={`${entry.logicalControlId}:${entry.position ?? ""}:${index}`}
+              >
+                <div className="Controller1_PipelineStage">
+                  <span>Physical</span>
+                  <strong>{physical}</strong>
+                  {entry.physical && (
+                    <small>value {entry.physical.value ?? "—"}</small>
+                  )}
+                </div>
+                <span className="Controller1_PipelineArrow">→</span>
+                <div className="Controller1_PipelineStage">
+                  <span>Logical</span>
+                  <strong>{entry.name}</strong>
+                  <small>{entry.position || "Between positions"}</small>
+                </div>
+                <span className="Controller1_PipelineArrow">→</span>
+                <div className="Controller1_PipelineStage">
+                  <span>Virtual</span>
+                  <strong>{output}</strong>
+                  <small>{entry.virtual?.emitted ? "Emitted" : "Not emitted"}</small>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </Focusable>
   );
 }
@@ -1145,6 +1630,13 @@ export function ControllerApp() {
         showTitle
         pages={[
           {
+            title: "Discover",
+            identifier: "discover",
+            icon: <FaSearch />,
+            padding: "none",
+            content: <DiscoverPage status={status} reload={controller.reload} />,
+          },
+          {
             title: "Setup",
             identifier: "setup",
             icon: <FaGamepad />,
@@ -1152,22 +1644,6 @@ export function ControllerApp() {
             content: (
               <SetupPage
                 status={status}
-                setStatus={controller.setStatus}
-                reload={controller.reload}
-              />
-            ),
-          },
-          {
-            title: "Controls",
-            identifier: "controls",
-            icon: <FaSlidersH />,
-            padding: "none",
-            content: (
-              <CalibrationPage
-                status={status}
-                catalog={controller.catalog}
-                snapshot={controller.snapshot}
-                setSnapshot={controller.setSnapshot}
                 setStatus={controller.setStatus}
                 reload={controller.reload}
               />
@@ -1184,6 +1660,29 @@ export function ControllerApp() {
                 catalog={controller.catalog}
                 learned={controller.learned}
                 setLearned={controller.setLearned}
+                reload={controller.reload}
+              />
+            ),
+          },
+          {
+            title: "Test",
+            identifier: "test",
+            icon: <FaBolt />,
+            padding: "none",
+            content: <TestPage status={status} />,
+          },
+          {
+            title: "Advanced Controls",
+            identifier: "advanced-controls",
+            icon: <FaSlidersH />,
+            padding: "none",
+            content: (
+              <CalibrationPage
+                status={status}
+                catalog={controller.catalog}
+                snapshot={controller.snapshot}
+                setSnapshot={controller.setSnapshot}
+                setStatus={controller.setStatus}
                 reload={controller.reload}
               />
             ),

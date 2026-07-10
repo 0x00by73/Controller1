@@ -11,9 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .devices import DeviceManager
+from .devices import DeviceManager, canonical_event_name
+from .discovery import DiscoverySession
 from .engine import MappingEngine
-from .models import AxisCalibration, Binding, CalibrationRun, InputRef, Profile
+from .logical_controls import compile_profile
+from .models import (
+    AxisCalibration, Binding, CalibrationRun, InputRef, LogicalControl, Profile,
+)
+from .output_allocator import allocate_logical_control
 from .outputs import VirtualOutputs
 from .store import ProfileStore
 
@@ -77,6 +82,8 @@ class ControllerService:
         self.output_event_count = 0
         self.dropped_output_count = 0
         self.component_logger = DiagnosticLogger(logger, self._debug)
+        self.discovery = DiscoverySession(self._event_name)
+        self.bind_assist_control_id: str | None = None
 
     async def start(self) -> None:
         self._debug("service_start")
@@ -100,7 +107,7 @@ class ControllerService:
             self._on_output_emit,
         )
         self.engine = MappingEngine(self.outputs, self.component_logger)
-        self.engine.set_profile(self.store.active_profile)
+        self.engine.set_profile(compile_profile(self.store.active_profile))
         self.devices = DeviceManager(
             self.evdev,
             self._on_input,
@@ -159,6 +166,9 @@ class ControllerService:
             "dependencyError": self.dependency_error,
             "learning": self.learning,
             "calibrating": self.calibration_active,
+            "discovering": self.discovery.active,
+            "bindAssisting": self.bind_assist_control_id is not None,
+            "bindAssistControlId": self.bind_assist_control_id,
             "outputGamepadName": self.store.state["outputGamepadName"],
             "outputKeyboardName": self.store.state["outputKeyboardName"],
         }
@@ -263,6 +273,7 @@ class ControllerService:
                     "name": profile.name,
                     "deviceId": profile.device_id,
                     "bindingCount": len(profile.bindings),
+                    "logicalControlCount": len(profile.logical_controls),
                     "calibrationCount": len(profile.calibrations),
                 },
                 "selectedDeviceId": getattr(self.devices, "selected_id", None),
@@ -291,13 +302,17 @@ class ControllerService:
             "recentLifecycle": list(self.debug_lifecycle),
             "recentPhysicalInput": list(self.debug_inputs),
             "recentVirtualOutput": list(self.debug_outputs),
+            "logicalActivity": list(getattr(self.engine, "pipeline", []))
+            if self.engine
+            else [],
         }
         return {"text": json.dumps(report, indent=2, sort_keys=True)}
 
     async def set_profile(self, profile_id: str) -> dict[str, Any]:
+        await self.stop_bind_assist()
         profile = self.store.set_active(profile_id)
         if self.engine:
-            self.engine.set_profile(profile)
+            self.engine.set_profile(compile_profile(profile))
         if self.store.state["enabled"]:
             await self._activate(profile.device_id)
         await self.emit("status_changed", await self.get_status())
@@ -329,6 +344,89 @@ class ControllerService:
         profile.bindings = [item for item in profile.bindings if item.id != binding_id]
         self._save_and_reload(profile)
         return profile.to_dict()
+
+    async def allocate_logical_control(
+        self, profile_id: str, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        profile = self._profile(profile_id)
+        control = LogicalControl.from_dict(value)
+        profile.logical_controls = [
+            item for item in profile.logical_controls if item.id != control.id
+        ]
+        return allocate_logical_control(profile, control).to_dict()
+
+    async def save_logical_control(
+        self, profile_id: str, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        profile = self._profile(profile_id)
+        control = LogicalControl.from_dict(value)
+        profile.logical_controls = [
+            item for item in profile.logical_controls if item.id != control.id
+        ]
+        if (
+            control.action is None and control.kind == "analog"
+        ) or any(position.action is None for position in control.positions):
+            control = allocate_logical_control(profile, control)
+        profile.logical_controls.append(control)
+        self._save_and_reload(profile)
+        return control.to_dict()
+
+    async def delete_logical_control(
+        self, profile_id: str, control_id: str
+    ) -> dict[str, Any]:
+        profile = self._profile(profile_id)
+        profile.logical_controls = [
+            item for item in profile.logical_controls if item.id != control_id
+        ]
+        if self.bind_assist_control_id == control_id:
+            await self.stop_bind_assist()
+        self._save_and_reload(profile)
+        return profile.to_dict()
+
+    async def start_discovery(self, profile_id: str) -> dict[str, Any]:
+        self._profile(profile_id)
+        if not self.devices or not self.devices.active_device:
+            raise RuntimeError("enable and select a controller before discovery")
+        self.discovery.start(profile_id, self.live_values)
+        return self.discovery.status()
+
+    async def begin_discovery_observation(self) -> dict[str, Any]:
+        self.discovery.begin_observation(self.live_values)
+        return self.discovery.status()
+
+    async def finish_discovery_observation(self) -> dict[str, Any] | None:
+        candidate = self.discovery.finish_observation()
+        return candidate.to_dict() if candidate else None
+
+    async def stop_discovery(self) -> dict[str, Any]:
+        self.discovery.stop()
+        return self.discovery.status()
+
+    async def get_discovery_status(self) -> dict[str, Any]:
+        return self.discovery.status()
+
+    async def start_bind_assist(
+        self, profile_id: str, logical_control_id: str
+    ) -> dict[str, Any]:
+        if profile_id != self.store.state["activeProfileId"]:
+            raise ValueError("bind assist requires the active profile")
+        profile = self._profile(profile_id)
+        if not any(item.id == logical_control_id for item in profile.logical_controls):
+            raise ValueError("unknown logical control")
+        if not self.engine:
+            raise RuntimeError("Controller1 mapping engine is unavailable")
+        self.bind_assist_control_id = logical_control_id
+        self.engine.start_bind_assist(logical_control_id)
+        return await self.get_status()
+
+    async def stop_bind_assist(self) -> dict[str, Any]:
+        self.bind_assist_control_id = None
+        if self.engine and hasattr(self.engine, "stop_bind_assist"):
+            self.engine.stop_bind_assist()
+        return await self.get_status()
+
+    async def get_pipeline_snapshot(self) -> list[dict[str, Any]]:
+        return list(getattr(self.engine, "pipeline", [])) if self.engine else []
 
     async def start_learning(self) -> None:
         if not self.devices or not self.devices.active_device:
@@ -468,6 +566,7 @@ class ControllerService:
         self._debug("deactivate")
         await self._cancel_live_snapshot()
         self.live_values.clear()
+        await self.stop_bind_assist()
         if self.engine:
             self.engine.release_all()
         if self.devices:
@@ -492,6 +591,19 @@ class ControllerService:
         key = f"{event.type}:{event.code}"
         value = int(event.value)
         self.live_values[key] = value
+        if self.discovery.active:
+            normalized = None
+            if (
+                self.engine
+                and self.evdev
+                and event.type == self.evdev.ecodes.EV_ABS
+            ):
+                normalized = self.engine.normalized(
+                    InputRef(int(event.type), int(event.code)), value
+                )
+            self.discovery.observe(
+                int(event.type), int(event.code), value, normalized
+            )
         if self.calibration_active:
             self.calibration_values[key] = value
             e = self.evdev.ecodes
@@ -716,6 +828,10 @@ class ControllerService:
         self._debug("physical_disconnect")
         if self.engine:
             self.engine.release_all()
+            if hasattr(self.engine, "stop_bind_assist"):
+                self.engine.stop_bind_assist()
+        self.bind_assist_control_id = None
+        self.discovery.stop()
         if self.calibration_active:
             self._schedule_calibration_persist_now()
 
@@ -733,8 +849,7 @@ class ControllerService:
     def _event_name(self, event_type: int, code: int) -> str:
         if not self.evdev:
             return str(code)
-        name = self.evdev.ecodes.bytype.get(event_type, {}).get(code, str(code))
-        return name[0] if isinstance(name, list) else str(name)
+        return canonical_event_name(self.evdev, event_type, code)
 
     def _on_output_emit(
         self, kind: str, code: str, value: int, emitted: bool
@@ -880,7 +995,8 @@ class ControllerService:
     def _save_and_reload(self, profile: Profile) -> None:
         self.store.replace_profile(profile)
         if self.engine and profile.id == self.store.state["activeProfileId"]:
-            self.engine.set_profile(profile)
+            self.bind_assist_control_id = None
+            self.engine.set_profile(compile_profile(profile))
 
     def _validate_output_name(self, value: str, label: str) -> str:
         if not isinstance(value, str):

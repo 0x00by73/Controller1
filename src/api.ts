@@ -28,6 +28,24 @@ export type Binding = {
   action: Action;
 };
 
+export type LogicalPosition = {
+  id: string;
+  label: string;
+  conditions: Predicate[];
+  action?: Action;
+};
+
+export type LogicalControl = {
+  id: string;
+  name: string;
+  kind: "analog" | "button" | "switch2" | "switch3";
+  sources: InputRef[];
+  positions: LogicalPosition[];
+  action?: Action;
+  confidence: number;
+  confirmed: boolean;
+};
+
 export type Calibration = {
   min: number;
   center: number;
@@ -49,6 +67,8 @@ export type Profile = {
   bindings: Binding[];
   calibrations: Record<string, Calibration>;
   calibrationRuns: Record<string, CalibrationRun>;
+  logicalControls: LogicalControl[];
+  outputMode: "standard" | "extended" | "hybrid";
 };
 
 export type Device = {
@@ -82,6 +102,35 @@ export type Status = {
   calibrating: boolean;
   outputGamepadName: string;
   outputKeyboardName: string;
+  discovering: boolean;
+  bindAssisting: boolean;
+  bindAssistControlId: string | null;
+};
+
+export type DiscoveryStatus = {
+  active: boolean;
+  state: string;
+  prompt: string;
+  candidate?: LogicalControl;
+  changedInputs: InputRef[];
+};
+
+export type PipelineEntry = {
+  logicalControlId: string;
+  name: string;
+  position?: string;
+  physical?: {
+    eventType: number;
+    code: number;
+    name: string;
+    value?: number;
+  };
+  virtual?: {
+    kind: string;
+    code: string;
+    value: number;
+    emitted: boolean;
+  };
 };
 
 export type InputSnapshot = {
@@ -131,3 +180,22 @@ export const setCalibration = callable<
   [profileId: string, input: InputRef, calibration: Calibration],
   Profile
 >("set_calibration");
+export const startDiscovery = callable<[profileId: string], void>("start_discovery");
+export const beginDiscoveryObservation = callable<[], void>("begin_discovery_observation");
+export const finishDiscoveryObservation = callable<[], LogicalControl | void>("finish_discovery_observation");
+export const stopDiscovery = callable<[], void>("stop_discovery");
+export const getDiscoveryStatus = callable<[], DiscoveryStatus>("get_discovery_status");
+export const saveLogicalControl = callable<
+  [profileId: string, control: LogicalControl],
+  LogicalControl
+>("save_logical_control");
+export const deleteLogicalControl = callable<
+  [profileId: string, controlId: string],
+  Profile
+>("delete_logical_control");
+export const startBindAssist = callable<
+  [profileId: string, controlId: string],
+  void
+>("start_bind_assist");
+export const stopBindAssist = callable<[], void>("stop_bind_assist");
+export const getPipelineSnapshot = callable<[], PipelineEntry[]>("get_pipeline_snapshot");

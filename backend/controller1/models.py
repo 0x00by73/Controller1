@@ -165,6 +165,7 @@ class Binding:
     id: str = field(default_factory=lambda: uuid4().hex)
     name: str = ""
     layer: str = "base"
+    logical_control_id: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Binding":
@@ -172,18 +173,93 @@ class Binding:
             id=str(value.get("id") or uuid4().hex),
             name=str(value.get("name", "")),
             layer=str(value.get("layer", "base")),
+            logical_control_id=value.get("logicalControlId"),
             conditions=[Predicate.from_dict(item) for item in value.get("conditions", [])],
             action=Action.from_dict(value["action"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "name": self.name,
             "layer": self.layer,
             "conditions": [item.to_dict() for item in self.conditions],
             "action": self.action.to_dict(),
         }
+        if self.logical_control_id is not None:
+            result["logicalControlId"] = self.logical_control_id
+        return result
+
+
+@dataclass
+class LogicalPosition:
+    id: str
+    label: str
+    conditions: list[Predicate]
+    action: Action | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "LogicalPosition":
+        return cls(
+            id=str(value.get("id") or uuid4().hex),
+            label=str(value.get("label", "")),
+            conditions=[Predicate.from_dict(item) for item in value.get("conditions", [])],
+            action=Action.from_dict(value["action"]) if value.get("action") else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self.id,
+            "label": self.label,
+            "conditions": [item.to_dict() for item in self.conditions],
+        }
+        if self.action is not None:
+            result["action"] = self.action.to_dict()
+        return result
+
+
+@dataclass
+class LogicalControl:
+    id: str
+    name: str
+    kind: str
+    sources: list[InputRef]
+    positions: list[LogicalPosition]
+    action: Action | None = None
+    confidence: float = 0.0
+    confirmed: bool = False
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "LogicalControl":
+        kind = str(value.get("kind", "button"))
+        if kind not in {"analog", "button", "switch2", "switch3"}:
+            raise ValueError(f"unknown logical control kind: {kind}")
+        return cls(
+            id=str(value.get("id") or uuid4().hex),
+            name=str(value.get("name", "Control")),
+            kind=kind,
+            sources=[InputRef.from_dict(item) for item in value.get("sources", [])],
+            positions=[
+                LogicalPosition.from_dict(item) for item in value.get("positions", [])
+            ],
+            action=Action.from_dict(value["action"]) if value.get("action") else None,
+            confidence=max(0.0, min(1.0, float(value.get("confidence", 0.0)))),
+            confirmed=bool(value.get("confirmed", False)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "sources": [item.to_dict() for item in self.sources],
+            "positions": [item.to_dict() for item in self.positions],
+            "confidence": self.confidence,
+            "confirmed": self.confirmed,
+        }
+        if self.action is not None:
+            result["action"] = self.action.to_dict()
+        return result
 
 
 @dataclass
@@ -194,6 +270,8 @@ class Profile:
     bindings: list[Binding] = field(default_factory=list)
     calibrations: dict[str, AxisCalibration] = field(default_factory=dict)
     calibration_runs: dict[str, CalibrationRun] = field(default_factory=dict)
+    logical_controls: list[LogicalControl] = field(default_factory=list)
+    output_mode: str = "standard"
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Profile":
@@ -210,6 +288,16 @@ class Profile:
                 key: CalibrationRun.from_dict(item)
                 for key, item in value.get("calibrationRuns", {}).items()
             },
+            logical_controls=[
+                LogicalControl.from_dict(item)
+                for item in value.get("logicalControls", [])
+            ],
+            output_mode=(
+                str(value.get("outputMode", "standard"))
+                if str(value.get("outputMode", "standard"))
+                in {"standard", "extended", "hybrid"}
+                else "standard"
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -222,13 +310,15 @@ class Profile:
             "calibrationRuns": {
                 key: item.to_dict() for key, item in self.calibration_runs.items()
             },
+            "logicalControls": [item.to_dict() for item in self.logical_controls],
+            "outputMode": self.output_mode,
         }
 
 
 def default_state() -> dict[str, Any]:
     profile = Profile(name="Default")
     return {
-        "version": 1,
+        "version": 2,
         "enabled": False,
         "outputGamepadName": DEFAULT_OUTPUT_GAMEPAD_NAME,
         "outputKeyboardName": DEFAULT_OUTPUT_KEYBOARD_NAME,

@@ -475,6 +475,133 @@ export const controllerStyles = `
   background: var(--c1-surface);
 }
 
+.Controller1_LogicalCard {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.Controller1_LogicalCard--binding {
+  border-color: var(--c1-warn);
+  box-shadow: inset 0 0 0 1px rgba(229, 168, 75, 0.25);
+}
+
+.Controller1_Positions {
+  display: grid;
+  gap: 9px;
+}
+
+.Controller1_PositionRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.85fr) minmax(200px, 1.15fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.Controller1_PositionOutput {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+}
+
+.Controller1_ReviewNotice,
+.Controller1_BindBanner {
+  padding: 11px 12px;
+  border-radius: 7px;
+  background: rgba(229, 168, 75, 0.15);
+  border: 1px solid rgba(229, 168, 75, 0.35);
+  color: #f0c57e;
+  font-size: 13px;
+}
+
+.Controller1_AdvancedDetails {
+  display: grid;
+  gap: 6px;
+  padding: 11px 12px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.58);
+  font: 12px/1.45 monospace;
+}
+
+.Controller1_AdvancedDetails strong {
+  color: rgba(255, 255, 255, 0.82);
+  font-family: inherit;
+}
+
+.Controller1_Discovery {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+}
+
+.Controller1_DiscoveryStep {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.Controller1_StepNumber {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--c1-accent);
+  color: white;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.Controller1_PipelineRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: var(--c1-surface);
+}
+
+.Controller1_PipelineRow--emitted {
+  border-color: rgba(89, 191, 64, 0.55);
+}
+
+.Controller1_PipelineStage {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.Controller1_PipelineStage > span,
+.Controller1_PipelineStage > small {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.Controller1_PipelineStage > strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.Controller1_PipelineArrow {
+  align-self: center;
+  color: var(--c1-accent);
+  font-size: 18px;
+}
+
 @media (max-width: 900px) {
   .Controller1_Grid--three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -489,6 +616,16 @@ export const controllerStyles = `
 
   .Controller1_FormGrid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .Controller1_PositionRow,
+  .Controller1_PipelineRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .Controller1_PipelineArrow {
+    transform: rotate(90deg);
+    justify-self: center;
   }
 }
 `;

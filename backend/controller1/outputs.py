@@ -16,6 +16,14 @@ class VirtualOutputs:
         "BTN_SELECT", "BTN_START", "BTN_MODE",
         "BTN_THUMBL", "BTN_THUMBR",
     )
+    EXTENDED_BUTTON_NAMES = tuple(
+        f"BTN_TRIGGER_HAPPY{index}" for index in range(1, 33)
+    )
+    PHYSICAL_JOYSTICK_TARGETS = (
+        "BTN_SOUTH", "BTN_EAST", "BTN_NORTH", "BTN_WEST",
+        "BTN_TL", "BTN_TR", "BTN_SELECT", "BTN_START",
+        "BTN_MODE", "BTN_THUMBL", "BTN_THUMBR", "BTN_TL2",
+    )
     GAMEPAD_BUTTON_ALIASES = {
         "BTN_TRIGGER": "BTN_SOUTH",
         "BTN_THUMB": "BTN_EAST",
@@ -81,7 +89,9 @@ class VirtualOutputs:
         e = self.evdev.ecodes
         abs_info = self.evdev.AbsInfo
         gamepad_caps = {
-            e.EV_KEY: self._named_codes(self.GAMEPAD_BUTTON_NAMES),
+            e.EV_KEY: self._named_codes(
+                self.GAMEPAD_BUTTON_NAMES + self.EXTENDED_BUTTON_NAMES
+            ),
             e.EV_ABS: [
                 (e.ABS_X, abs_info(0, -32768, 32767, 128, 256, 0)),
                 (e.ABS_Y, abs_info(0, -32768, 32767, 128, 256, 0)),
@@ -129,7 +139,11 @@ class VirtualOutputs:
         keyboard_names = sorted(self._keyboard_codes())
         return {
             "gamepadButton": entries(
-                [name for name in self.GAMEPAD_BUTTON_NAMES if self._has_code(name)]
+                [
+                    name
+                    for name in self.GAMEPAD_BUTTON_NAMES + self.EXTENDED_BUTTON_NAMES
+                    if self._has_code(name)
+                ]
             ),
             "gamepadAxis": entries(
                 [name for name in self.GAMEPAD_AXIS_NAMES if self._has_code(name)]
@@ -156,6 +170,9 @@ class VirtualOutputs:
     def gamepad_control(self, event_type: int, code: int) -> tuple[str, str] | None:
         e = self.evdev.ecodes
         if event_type == e.EV_KEY:
+            if 288 <= code <= 299:
+                index = code - 288
+                return "gamepadButton", self.PHYSICAL_JOYSTICK_TARGETS[index]
             allowed = self.GAMEPAD_BUTTON_NAMES
             output_type = "gamepadButton"
         elif event_type == e.EV_ABS:

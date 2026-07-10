@@ -288,6 +288,52 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trigger.center, 0)
         self.assertEqual(trigger.maximum, 255)
 
+    async def test_logical_control_save_delete_and_discovery(self):
+        profile_id = self.service.store.active_profile.id
+        saved = await self.service.save_logical_control(
+            profile_id,
+            {
+                "id": "toggle",
+                "name": "Toggle",
+                "kind": "button",
+                "sources": [{"eventType": 1, "code": 304, "name": "BTN_SOUTH"}],
+                "positions": [
+                    {
+                        "id": "pressed",
+                        "label": "Pressed",
+                        "conditions": [
+                            {
+                                "input": {"eventType": 1, "code": 304},
+                                "test": "pressed",
+                            }
+                        ],
+                    }
+                ],
+                "confidence": 0.9,
+                "confirmed": False,
+            },
+        )
+        self.assertEqual(saved["positions"][0]["action"]["type"], "gamepadButton")
+        self.assertEqual(len(self.service.store.active_profile.logical_controls), 1)
+
+        self.service.devices = FakeDevices(FakeInputDevice())
+        self.service.evdev = SimpleNamespace(
+            ecodes=SimpleNamespace(
+                EV_KEY=1,
+                EV_ABS=3,
+                bytype={1: {304: "BTN_SOUTH"}},
+            )
+        )
+        await self.service.start_discovery(profile_id)
+        await self.service.begin_discovery_observation()
+        self.service._on_input(SimpleNamespace(type=1, code=304, value=1))
+        self.service._on_input(SimpleNamespace(type=1, code=304, value=0))
+        candidate = await self.service.finish_discovery_observation()
+        self.assertEqual(candidate["kind"], "button")
+
+        deleted = await self.service.delete_logical_control(profile_id, "toggle")
+        self.assertEqual(deleted["logicalControls"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from .models import Action, AxisCalibration, Binding, InputRef, Profile
@@ -16,11 +17,24 @@ class MappingEngine:
         self.active_continuous: set[str] = set()
         self.output_counts: dict[str, int] = {}
         self.active_passthrough: dict[str, tuple[str, str]] = {}
+        self.bind_assist_control_id: str | None = None
+        self.bind_assist_positions: set[str] = set()
+        self.pipeline: deque[dict[str, Any]] = deque(maxlen=100)
 
     def set_profile(self, profile: Profile) -> None:
         self.release_all()
+        self.stop_bind_assist()
         self.profile = profile
         self.raw_state.clear()
+
+    def start_bind_assist(self, logical_control_id: str) -> None:
+        self.release_all()
+        self.bind_assist_control_id = logical_control_id
+        self.bind_assist_positions.clear()
+
+    def stop_bind_assist(self) -> None:
+        self.bind_assist_control_id = None
+        self.bind_assist_positions.clear()
 
     def set_default_calibrations(
         self, calibrations: dict[str, AxisCalibration]
@@ -40,6 +54,9 @@ class MappingEngine:
     def process(self, event_type: int, code: int, value: int) -> None:
         changed = InputRef(event_type=event_type, code=code)
         self.raw_state[changed.key] = value
+        if self.bind_assist_control_id is not None:
+            self._process_bind_assist(changed)
+            return
         self._emit_passthrough(changed, value)
 
         active_layers = {"base"}
@@ -69,6 +86,7 @@ class MappingEngine:
                     self.active_continuous.add(binding.id)
                     if source and source.key == changed.key:
                         self._emit_continuous(binding.action, value)
+                        self._record_pipeline(changed, binding, value=value)
                 elif was_continuous:
                     self.active_continuous.discard(binding.id)
                     if not self._continuous_target_active(binding.action):
@@ -78,6 +96,7 @@ class MappingEngine:
             if should_be_active and not was_active:
                 self._activate_action(binding.action)
                 self.active_bindings.add(binding.id)
+                self._record_pipeline(changed, binding, value=value)
             elif was_active and not should_be_active:
                 self._deactivate_action(binding.action)
                 self.active_bindings.discard(binding.id)
@@ -153,6 +172,85 @@ class MappingEngine:
                 and binding.action.code == output_code
             )
             for binding in self.profile.bindings
+        ) or any(
+            source.key == input_ref.key
+            for logical in self.profile.logical_controls
+            for source in logical.sources
+        )
+
+    def _process_bind_assist(self, changed: InputRef) -> None:
+        relevant = [
+            binding
+            for binding in self.profile.bindings
+            if binding.logical_control_id == self.bind_assist_control_id
+            and binding.action.type not in ("gamepadAxis", "mouseMove", "layer")
+        ]
+        source_keys = {
+            condition.input.key
+            for binding in relevant
+            for condition in binding.conditions
+        }
+        if changed.key not in source_keys:
+            return
+        active = {
+            binding.id for binding in relevant if self._conditions_match(binding)
+        }
+        entered = active - self.bind_assist_positions
+        for binding in relevant:
+            if binding.id not in entered:
+                continue
+            self._activate_action(binding.action)
+            self._deactivate_action(binding.action)
+            self._record_pipeline(changed, binding, value=1, pulse=True)
+        self.bind_assist_positions = active
+
+    def _record_pipeline(
+        self,
+        changed: InputRef,
+        binding: Binding,
+        value: int | float,
+        pulse: bool = False,
+    ) -> None:
+        if binding.logical_control_id is None:
+            return
+        position_id = (
+            binding.id.rsplit(":", 1)[-1]
+            if ":position:" in binding.id
+            else None
+        )
+        logical = next(
+            (
+                item
+                for item in self.profile.logical_controls
+                if item.id == binding.logical_control_id
+            ),
+            None,
+        )
+        position = next(
+            (item for item in logical.positions if item.id == position_id),
+            None,
+        ) if logical else None
+        source = next(
+            (item for item in logical.sources if item.key == changed.key),
+            changed,
+        ) if logical else changed
+        self.pipeline.append(
+            {
+                "logicalControlId": binding.logical_control_id,
+                "name": logical.name if logical else binding.name,
+                "position": position.label if position else None,
+                "physical": {
+                    **source.to_dict(),
+                    "value": value,
+                },
+                "virtual": {
+                    "kind": binding.action.type,
+                    "code": binding.action.code,
+                    "value": value,
+                    "emitted": True,
+                },
+                "pulse": pulse,
+            }
         )
 
     def _primitives(self, action: Action) -> list[tuple[str, str]]:

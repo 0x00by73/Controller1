@@ -12,6 +12,7 @@ from .models import (
     Profile,
     default_state,
 )
+from .migrate import migrate_state
 
 
 class ProfileStore:
@@ -41,11 +42,18 @@ class ProfileStore:
             except (OSError, json.JSONDecodeError):
                 loaded = {}
         try:
-            profiles = [Profile.from_dict(item).to_dict() for item in loaded.get("profiles", [])]
+            original_version = int(loaded.get("version", 1))
+            loaded = migrate_state(loaded)
+            profiles = []
+            for item in loaded.get("profiles", []):
+                normalized = Profile.from_dict(item).to_dict()
+                # Migration must not reinterpret manual bindings.
+                normalized["bindings"] = item.get("bindings", [])
+                profiles.append(normalized)
             if not profiles:
                 raise ValueError("settings contain no profiles")
             self.state = {
-                "version": 1,
+                "version": 2,
                 "enabled": bool(loaded.get("enabled", False)),
                 "outputGamepadName": str(
                     loaded.get("outputGamepadName", DEFAULT_OUTPUT_GAMEPAD_NAME)
@@ -58,6 +66,8 @@ class ProfileStore:
             }
             if not any(p["id"] == self.state["activeProfileId"] for p in profiles):
                 self.state["activeProfileId"] = profiles[0]["id"]
+            if original_version < 2:
+                self.save()
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             backup = self.path.with_suffix(".json.invalid")
             try:

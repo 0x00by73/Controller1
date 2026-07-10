@@ -80,6 +80,51 @@ class Plugin:
     ) -> dict[str, Any]:
         return await self._require_service().delete_binding(profile_id, binding_id)
 
+    async def allocate_logical_control(
+        self, profile_id: str, control: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._require_service().allocate_logical_control(profile_id, control)
+
+    async def save_logical_control(
+        self, profile_id: str, control: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._require_service().save_logical_control(profile_id, control)
+
+    async def delete_logical_control(
+        self, profile_id: str, control_id: str
+    ) -> dict[str, Any]:
+        return await self._require_service().delete_logical_control(
+            profile_id, control_id
+        )
+
+    async def start_discovery(self, profile_id: str) -> dict[str, Any]:
+        return await self._require_service().start_discovery(profile_id)
+
+    async def begin_discovery_observation(self) -> dict[str, Any]:
+        return await self._require_service().begin_discovery_observation()
+
+    async def finish_discovery_observation(self) -> dict[str, Any] | None:
+        return await self._require_service().finish_discovery_observation()
+
+    async def stop_discovery(self) -> dict[str, Any]:
+        return await self._require_service().stop_discovery()
+
+    async def get_discovery_status(self) -> dict[str, Any]:
+        return await self._require_service().get_discovery_status()
+
+    async def start_bind_assist(
+        self, profile_id: str, logical_control_id: str
+    ) -> dict[str, Any]:
+        return await self._require_service().start_bind_assist(
+            profile_id, logical_control_id
+        )
+
+    async def stop_bind_assist(self) -> dict[str, Any]:
+        return await self._require_service().stop_bind_assist()
+
+    async def get_pipeline_snapshot(self) -> list[dict[str, Any]]:
+        return await self._require_service().get_pipeline_snapshot()
+
     async def start_learning(self) -> None:
         await self._require_service().start_learning()
 
