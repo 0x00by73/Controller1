@@ -111,7 +111,13 @@ function useController() {
 
     const statusListener = addEventListener<[Status]>("status_changed", setStatus);
     const devicesListener = addEventListener<[Device[]]>("devices_changed", (devices) => {
-      setStatus((current) => current ? { ...current, devices } : current);
+      setStatus((current) => current
+        ? {
+          ...current,
+          devices,
+          connected: current.enabled && devices.some((device) => device.active),
+        }
+        : current);
     });
     const snapshotListener = addEventListener<[InputSnapshot]>("input_snapshot", queueSnapshot);
     const rawListener = addEventListener<[RawInput]>("raw_input", (input) => {
@@ -217,16 +223,16 @@ function SetupPage({
       <div className="Controller1_Hero">
         <div>
           <h1 className="Controller1_Title">
-            {status.enabled ? status.outputGamepadName : "Connect a controller"}
+            {status.connected ? status.outputGamepadName : "Connect a controller"}
           </h1>
           <div className="Controller1_Subtitle">
-            {status.enabled && selected
+            {status.connected && selected
               ? `${selected.name} is captured and emitting virtual devices.`
               : "Choose the physical input and virtual device identity."}
           </div>
         </div>
-        <span className={`Controller1_Badge ${status.enabled ? "Controller1_Badge--good" : ""}`}>
-          {status.enabled ? <><FaCheck /> Connected</> : "Disconnected"}
+        <span className={`Controller1_Badge ${status.connected ? "Controller1_Badge--good" : ""}`}>
+          {status.connected ? <><FaCheck /> Connected</> : "Disconnected"}
         </span>
       </div>
 
@@ -480,7 +486,7 @@ function CalibrationPage({
     showControlMappingModal(input, profile, catalog, reload);
   }, [catalog, profile, reload]);
 
-  if (!status.enabled || !device || !profile) {
+  if (!status.connected || !device || !profile) {
     return (
       <div className="Controller1_Content">
         <PageHeader
@@ -987,7 +993,7 @@ function ChordsPage({
           >
             Clear
           </DialogButton>
-          <DialogButton disabled={!status.enabled || status.learning} onClick={learn}>
+          <DialogButton disabled={!status.connected || status.learning} onClick={learn}>
             {learned.length ? "Add another input" : "Record first input"}
           </DialogButton>
         </div>
@@ -1033,17 +1039,29 @@ function ChordsPage({
 
 async function copyText(value: string) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Decky's embedded browser exposes Clipboard API but can deny it.
+    }
   }
   const field = document.createElement("textarea");
   field.value = value;
   field.style.position = "fixed";
+  field.style.left = "-9999px";
   field.style.opacity = "0";
   document.body.appendChild(field);
+  field.focus();
   field.select();
-  document.execCommand("copy");
-  field.remove();
+  field.setSelectionRange(0, field.value.length);
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("Clipboard copy was rejected");
+    }
+  } finally {
+    field.remove();
+  }
 }
 
 function DebugPage() {
@@ -1179,7 +1197,7 @@ export function QuickPanel() {
       <div className="Controller1_QAMStatus">
         <strong>{status?.outputGamepadName ?? "Controller1"}</strong>
         <div className="Controller1_Subtitle">
-          {status?.enabled ? "Connected and emitting" : "Not connected"}
+          {status?.connected ? "Connected and emitting" : "Not connected"}
         </div>
       </div>
       <ButtonItem

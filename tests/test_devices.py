@@ -134,6 +134,22 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertIsNone(manager.active_device)
         self.assertEqual(disconnects, [True])
 
+    def test_detach_notifies_when_no_reader_task_exists(self):
+        connection_changes = []
+        manager = DeviceManager(
+            FakeEvdev,
+            lambda _event: None,
+            lambda _devices: None,
+            lambda: None,
+            on_connection_changed=lambda: connection_changes.append(True),
+        )
+        manager.active_device = FakeInputDevice()
+
+        asyncio.run(manager._detach())
+
+        self.assertIsNone(manager.active_device)
+        self.assertEqual(connection_changes, [True])
+
     def test_select_raises_when_controller_cannot_be_grabbed(self):
         class BusyInputDevice(FakeInputDevice):
             def grab(self):

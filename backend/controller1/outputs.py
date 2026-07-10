@@ -16,10 +16,37 @@ class VirtualOutputs:
         "BTN_SELECT", "BTN_START", "BTN_MODE",
         "BTN_THUMBL", "BTN_THUMBR",
     )
+    GAMEPAD_BUTTON_ALIASES = {
+        "BTN_TRIGGER": "BTN_SOUTH",
+        "BTN_THUMB": "BTN_EAST",
+        "BTN_THUMB2": "BTN_NORTH",
+        "BTN_TOP": "BTN_WEST",
+        "BTN_TOP2": "BTN_TL",
+        "BTN_PINKIE": "BTN_TR",
+        "BTN_BASE": "BTN_SELECT",
+        "BTN_BASE2": "BTN_START",
+        "BTN_BASE3": "BTN_MODE",
+        "BTN_BASE4": "BTN_THUMBL",
+        "BTN_BASE5": "BTN_THUMBR",
+        "BTN_0": "BTN_SOUTH",
+        "BTN_1": "BTN_EAST",
+        "BTN_2": "BTN_NORTH",
+        "BTN_3": "BTN_WEST",
+        "BTN_4": "BTN_TL",
+        "BTN_5": "BTN_TR",
+        "BTN_6": "BTN_TL2",
+        "BTN_7": "BTN_TR2",
+        "BTN_8": "BTN_SELECT",
+        "BTN_9": "BTN_START",
+    }
     GAMEPAD_AXIS_NAMES = (
         "ABS_X", "ABS_Y", "ABS_RX", "ABS_RY",
         "ABS_Z", "ABS_RZ", "ABS_HAT0X", "ABS_HAT0Y",
     )
+    GAMEPAD_AXIS_ALIASES = {
+        "ABS_THROTTLE": "ABS_HAT0X",
+        "ABS_RUDDER": "ABS_HAT0Y",
+    }
     MOUSE_BUTTON_NAMES = (
         "BTN_LEFT", "BTN_RIGHT", "BTN_MIDDLE", "BTN_SIDE",
         "BTN_EXTRA", "BTN_FORWARD", "BTN_BACK", "BTN_TASK",
@@ -143,6 +170,17 @@ class VirtualOutputs:
         for name in names:
             if name in allowed:
                 return output_type, name
+            if event_type == e.EV_KEY and name in self.GAMEPAD_BUTTON_ALIASES:
+                return output_type, self.GAMEPAD_BUTTON_ALIASES[name]
+            if event_type == e.EV_KEY and name.startswith("BTN_TRIGGER_HAPPY"):
+                try:
+                    index = int(name.removeprefix("BTN_TRIGGER_HAPPY")) - 1
+                except ValueError:
+                    continue
+                if 0 <= index < len(self.GAMEPAD_BUTTON_NAMES):
+                    return output_type, self.GAMEPAD_BUTTON_NAMES[index]
+            if event_type == e.EV_ABS and name in self.GAMEPAD_AXIS_ALIASES:
+                return output_type, self.GAMEPAD_AXIS_ALIASES[name]
         return None
 
     def _keyboard_codes(self) -> dict[str, int]:

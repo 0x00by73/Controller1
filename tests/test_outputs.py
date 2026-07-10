@@ -37,6 +37,10 @@ def fake_evdev():
         "KEY_A": 30,
         "KEY_SPACE": 57,
         "KEY_MAX": 0x2FF,
+        "BTN_0": 256,
+        "BTN_TRIGGER": 288,
+        "BTN_TRIGGER_HAPPY1": 704,
+        "ABS_THROTTLE": 20,
     }
     for index, name in enumerate(VirtualOutputs.GAMEPAD_BUTTON_NAMES, start=304):
         names[name] = index
@@ -48,10 +52,20 @@ def fake_evdev():
         names[name] = index
     bytype = {
         names["EV_KEY"]: {
-            names[name]: name for name in VirtualOutputs.GAMEPAD_BUTTON_NAMES
+            **{
+                names[name]: name
+                for name in VirtualOutputs.GAMEPAD_BUTTON_NAMES
+            },
+            names["BTN_0"]: "BTN_0",
+            names["BTN_TRIGGER"]: ("BTN_JOYSTICK", "BTN_TRIGGER"),
+            names["BTN_TRIGGER_HAPPY1"]: "BTN_TRIGGER_HAPPY1",
         },
         names["EV_ABS"]: {
-            names[name]: name for name in VirtualOutputs.GAMEPAD_AXIS_NAMES
+            **{
+                names[name]: name
+                for name in VirtualOutputs.GAMEPAD_AXIS_NAMES
+            },
+            names["ABS_THROTTLE"]: "ABS_THROTTLE",
         },
     }
     return SimpleNamespace(
@@ -101,6 +115,22 @@ class VirtualOutputsTests(unittest.TestCase):
         self.assertEqual(
             outputs.gamepad_control(e.EV_ABS, e.ABS_X),
             ("gamepadAxis", "ABS_X"),
+        )
+        self.assertEqual(
+            outputs.gamepad_control(e.EV_KEY, e.BTN_TRIGGER),
+            ("gamepadButton", "BTN_SOUTH"),
+        )
+        self.assertEqual(
+            outputs.gamepad_control(e.EV_KEY, e.BTN_0),
+            ("gamepadButton", "BTN_SOUTH"),
+        )
+        self.assertEqual(
+            outputs.gamepad_control(e.EV_KEY, e.BTN_TRIGGER_HAPPY1),
+            ("gamepadButton", "BTN_SOUTH"),
+        )
+        self.assertEqual(
+            outputs.gamepad_control(e.EV_ABS, e.ABS_THROTTLE),
+            ("gamepadAxis", "ABS_HAT0X"),
         )
         self.assertIsNone(outputs.gamepad_control(e.EV_KEY, e.BTN_LEFT))
 

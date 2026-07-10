@@ -169,6 +169,19 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.service.outputs.opened)
         self.assertEqual(self.service.devices.selections, ["busy", None])
 
+    async def test_status_distinguishes_enabled_from_physically_connected(self):
+        devices = FakeDevices(FakeInputDevice())
+        self.service.devices = devices
+        self.service.store.state["enabled"] = True
+
+        self.assertTrue((await self.service.get_status())["connected"])
+
+        devices.active_device = None
+
+        status = await self.service.get_status()
+        self.assertTrue(status["enabled"])
+        self.assertFalse(status["connected"])
+
     async def test_calibration_emits_aggregated_session_snapshot(self):
         device = FakeInputDevice()
         self.service.evdev = SimpleNamespace(

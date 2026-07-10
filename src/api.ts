@@ -73,6 +73,7 @@ export type Device = {
 
 export type Status = {
   enabled: boolean;
+  connected: boolean;
   activeProfileId: string;
   profiles: Profile[];
   devices: Device[];

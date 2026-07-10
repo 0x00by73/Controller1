@@ -107,6 +107,7 @@ class ControllerService:
             self._on_devices_changed,
             self._on_disconnect,
             self.component_logger,
+            self._on_connection_changed,
         )
         await self.devices.start()
         if self.store.state["enabled"]:
@@ -147,6 +148,11 @@ class ControllerService:
             device["active"] = device["path"] == active_path
         return {
             "enabled": bool(self.store.state["enabled"]),
+            "connected": bool(
+                self.store.state["enabled"]
+                and self.devices
+                and self.devices.active_device
+            ),
             "activeProfileId": self.store.state["activeProfileId"],
             "profiles": [profile.to_dict() for profile in self.store.profiles],
             "devices": devices,
@@ -713,6 +719,9 @@ class ControllerService:
         if self.calibration_active:
             self._schedule_calibration_persist_now()
 
+    def _on_connection_changed(self) -> None:
+        self._schedule_status_changed()
+
     def _schedule_calibration_persist_now(self) -> None:
         if self.calibration_persist_task:
             return
@@ -845,6 +854,14 @@ class ControllerService:
         task = asyncio.get_running_loop().create_task(self.emit(event, *args))
         self.emit_tasks.add(task)
         task.add_done_callback(self._finish_emit)
+
+    def _schedule_status_changed(self) -> None:
+        task = asyncio.get_running_loop().create_task(self._emit_status_changed())
+        self.emit_tasks.add(task)
+        task.add_done_callback(self._finish_emit)
+
+    async def _emit_status_changed(self) -> None:
+        await self.emit("status_changed", await self.get_status())
 
     def _finish_emit(self, task: asyncio.Task[None]) -> None:
         self.emit_tasks.discard(task)

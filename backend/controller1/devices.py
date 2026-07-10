@@ -15,12 +15,14 @@ class DeviceManager:
         on_devices_changed: Callable[[list[dict[str, Any]]], None],
         on_disconnect: Callable[[], None],
         logger: Any | None = None,
+        on_connection_changed: Callable[[], None] | None = None,
     ) -> None:
         self.evdev = evdev_module
         self.on_event = on_event
         self.on_devices_changed = on_devices_changed
         self.on_disconnect = on_disconnect
         self.logger = logger
+        self.on_connection_changed = on_connection_changed
         self.devices: dict[str, dict[str, Any]] = {}
         self.selected_id: str | None = None
         self.active_device: Any | None = None
@@ -313,6 +315,8 @@ class DeviceManager:
                     self.reader_task = asyncio.create_task(
                         self._read_loop(device), name="controller1-input"
                     )
+                    if self.on_connection_changed:
+                        self.on_connection_changed()
                     self._log("info", f"Grabbed {device.name} at {device.path}")
                     return True
                 except OSError as error:
@@ -336,6 +340,8 @@ class DeviceManager:
                 pass
             self.active_device.close()
             self.active_device = None
+            if self.on_connection_changed:
+                self.on_connection_changed()
 
     async def _read_loop(self, device: Any) -> None:
         try:
@@ -356,6 +362,8 @@ class DeviceManager:
                 device.close()
                 self.active_device = None
                 self.on_disconnect()
+                if self.on_connection_changed:
+                    self.on_connection_changed()
                 self.wake.set()
 
     async def _scan_loop(self) -> None:
