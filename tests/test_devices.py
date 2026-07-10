@@ -109,9 +109,60 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(found[0]["axes"][0]["value"], 127)
         self.assertEqual(found[0]["axes"][0]["initialValue"], 127)
 
+    def test_scan_does_not_report_live_axis_jitter_as_device_change(self):
+        notifications = []
+        values = iter((127, 128))
+
+        class JitteringInputDevice(FakeInputDevice):
+            def capabilities(self, verbose=False, absinfo=True):
+                capabilities = super().capabilities(verbose, absinfo)
+                if absinfo:
+                    capabilities[FakeEvdev.ecodes.EV_ABS][0][1].value = next(values)
+                return capabilities
+
+        evdev = SimpleNamespace(
+            ecodes=FakeEvdev.ecodes,
+            list_devices=FakeEvdev.list_devices,
+            InputDevice=lambda _path: JitteringInputDevice(),
+        )
+        manager = DeviceManager(
+            evdev,
+            lambda _event: None,
+            notifications.append,
+            lambda: None,
+        )
+
+        asyncio.run(manager.scan())
+        asyncio.run(manager.scan())
+
+        self.assertEqual(len(notifications), 1)
+        device = manager.devices[next(iter(manager.devices))]
+        self.assertEqual(device["axes"][0]["value"], 128)
+
     def test_parse_capability_bitmap(self):
         manager = DeviceManager(FakeEvdev, lambda _event: None, lambda _devices: None, lambda: None)
         self.assertEqual(manager._parse_capability_bitmap("3 0 0"), [0, 1])
+
+    def test_steam_input_virtual_gamepad_is_not_a_physical_candidate(self):
+        manager = DeviceManager(
+            FakeEvdev,
+            lambda _event: None,
+            lambda _devices: None,
+            lambda: None,
+        )
+
+        self.assertFalse(
+            manager._is_candidate_info(
+                {
+                    "name": "Microsoft X-Box 360 pad 0",
+                    "phys": "",
+                    "vendor": 0x28DE,
+                    "product": 0x11FF,
+                    "keyCodes": [304, 305],
+                    "absCodes": [0, 1, 2, 3],
+                }
+            )
+        )
 
     def test_reader_releases_device_and_notifies_on_disconnect(self):
         events = []

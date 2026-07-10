@@ -71,6 +71,12 @@ const ACTION_LABELS: Record<Action["type"], string> = {
   layer: "Hold layer",
 };
 
+const AXIS_POSITION_PRESETS = [
+  { label: "Low", range: [-1, -0.55] as [number, number] },
+  { label: "Center", range: [-0.45, 0.45] as [number, number] },
+  { label: "High", range: [0.55, 1] as [number, number] },
+];
+
 const eventKey = (input: InputRef) => `${input.eventType}:${input.code}`;
 const inputType = (input: InputRef) => input.eventType === 3 ? "Axis" : "Button";
 
@@ -542,7 +548,7 @@ function CalibrationPage({
 
       <PageHeader
         title={`Buttons · ${device.buttons.length}`}
-        description="Blue means pressed now. Green outline means seen during this calibration."
+        description="These are hardware-advertised buttons. Blue means pressed now; green means an event was observed."
       />
       <div className="Controller1_ButtonGrid">
         {device.buttons.map((button) => (
@@ -583,8 +589,8 @@ function MappingBuilder({
   const [actionType, setActionType] = useState<Action["type"]>("gamepadButton");
   const [outputCode, setOutputCode] = useState("BTN_SOUTH");
   const [name, setName] = useState("");
-  const [low, setLow] = useState(-1);
-  const [high, setHigh] = useState(1);
+  const [low, setLow] = useState(-0.45);
+  const [high, setHigh] = useState(0.45);
   const outputs = outputOptions(catalog, actionType);
   const customOutput = actionType === "keyCombo" || actionType === "layer";
 
@@ -666,9 +672,22 @@ function MappingBuilder({
           <div className="Controller1_FormHeading Controller1_FormHeading--compact">
             <div>
               <h3>Active range</h3>
-              <p>Trigger only while the calibrated axis is inside this zone.</p>
+              <p>RC switches use axes: save one gamepad-button mapping for each position.</p>
             </div>
             <span className="Controller1_RangeValue">{low.toFixed(2)} … {high.toFixed(2)}</span>
+          </div>
+          <div className="Controller1_Actions">
+            {AXIS_POSITION_PRESETS.map((preset) => (
+              <DialogButton
+                key={preset.label}
+                onClick={() => {
+                  setLow(preset.range[0]);
+                  setHigh(preset.range[1]);
+                }}
+              >
+                {preset.label} position
+              </DialogButton>
+            ))}
           </div>
           <SliderField label="Start" value={low} min={-1} max={high} step={0.05} onChange={setLow} />
           <SliderField label="End" value={high} min={low} max={1} step={0.05} onChange={setHigh} />

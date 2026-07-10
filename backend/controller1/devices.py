@@ -81,7 +81,7 @@ class DeviceManager:
             finally:
                 if device:
                     device.close()
-        changed = discovered != self.devices
+        changed = self._inventory_signature(discovered) != self._inventory_signature(self.devices)
         self.devices = discovered
         if changed:
             self.on_devices_changed(list(discovered.values()))
@@ -90,6 +90,44 @@ class DeviceManager:
         elif self.active_device and self.selected_id not in discovered:
             await self._detach()
         return list(discovered.values())
+
+    @staticmethod
+    def _inventory_signature(
+        devices: dict[str, dict[str, Any]],
+    ) -> tuple[tuple[Any, ...], ...]:
+        """Compare topology and capabilities without live input state."""
+        return tuple(
+            sorted(
+                (
+                    device_id,
+                    info.get("path"),
+                    info.get("name"),
+                    info.get("phys"),
+                    info.get("uniq"),
+                    info.get("bus"),
+                    info.get("vendor"),
+                    info.get("product"),
+                    info.get("version"),
+                    tuple(
+                        (
+                            axis.get("code"),
+                            axis.get("name"),
+                            axis.get("min"),
+                            axis.get("max"),
+                            axis.get("flat"),
+                            axis.get("fuzz"),
+                            axis.get("resolution"),
+                        )
+                        for axis in info.get("axes", [])
+                    ),
+                    tuple(
+                        (button.get("code"), button.get("name"))
+                        for button in info.get("buttons", [])
+                    ),
+                )
+                for device_id, info in devices.items()
+            )
+        )
 
     def _capabilities(self, device: Any) -> dict[int, list[int]]:
         # evdev 1.9+ defaults absinfo=True, which returns (code, AbsInfo) tuples.
@@ -100,6 +138,8 @@ class DeviceManager:
             {
                 "name": device.name or "",
                 "phys": device.phys or "",
+                "vendor": int(device.info.vendor),
+                "product": int(device.info.product),
                 "keyCodes": self._capabilities(device).get(self.evdev.ecodes.EV_KEY, []),
                 "absCodes": self._capabilities(device).get(self.evdev.ecodes.EV_ABS, []),
             }
@@ -110,6 +150,10 @@ class DeviceManager:
         if name.startswith("Controller1 Virtual"):
             return False
         if str(info.get("phys") or "") == "controller1/virtual":
+            return False
+        # Steam Input's transient Xbox-compatible uinput device is an output,
+        # not a physical controller Controller1 should capture.
+        if int(info.get("vendor") or 0) == 0x28DE and int(info.get("product") or 0) == 0x11FF:
             return False
         e = self.evdev.ecodes
         keys = {int(code) for code in info.get("keyCodes", [])}
@@ -219,6 +263,8 @@ class DeviceManager:
             {
                 "name": name,
                 "phys": phys,
+                "vendor": vendor,
+                "product": product,
                 "keyCodes": key_codes,
                 "absCodes": abs_codes,
             }
