@@ -123,6 +123,44 @@ class DiscoveryTests(unittest.TestCase):
         session.start("p", {"1:304": 0})
         self.assertEqual(session.state, "observing")
 
+    def test_classifies_two_position_exclusive_switch(self):
+        session = DiscoverySession()
+        session.start("p", {"1:288": 0, "1:289": 0})
+        for code, value in ((288, 1), (288, 0), (289, 1), (289, 0)):
+            session.observe(1, code, value)
+        candidate = session.finish_observation()
+        self.assertIsNotNone(candidate)
+        self.assertIn(candidate.kind, {"switch2", "switch3"})
+
+    def test_falls_back_to_button_when_no_switch_pattern_matches(self):
+        session = DiscoverySession()
+        session.start("p", {"1:304": 0, "1:305": 0})
+        session.observe(1, 304, 1)
+        session.observe(1, 304, 0)
+        candidate = session.finish_observation()
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.kind, "button")
+        self.assertEqual(candidate.sources[0].code, 304)
+
+    def test_classifies_active_low_button(self):
+        session = DiscoverySession()
+        session.start("p", {"1:304": 1})
+        session.observe(1, 304, 0)
+        session.observe(1, 304, 1)
+        candidate = session.finish_observation()
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.kind, "button")
+
+    def test_prefers_button_over_incidental_axis_drift(self):
+        session = DiscoverySession()
+        session.start("p", {"1:304": 0, "3:0": 1000}, {"3:0": 0.0})
+        session.observe(1, 304, 1)
+        session.observe(1, 304, 0)
+        session.observe(3, 0, 1050, 0.05)
+        candidate = session.finish_observation()
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.kind, "button")
+
     def test_classifies_mutually_exclusive_keys_as_switch3(self):
         session = DiscoverySession()
         session.start("p", {"1:288": 0, "1:289": 0})

@@ -74,7 +74,7 @@ class DiscoverySession:
         if event_type == EV_KEY:
             if value != self.baseline.get(key, 0):
                 self.changed_inputs.add(key)
-            self.samples[key].append(float(value != 0))
+            self.samples[key].append(float(self._key_pressed(key, value)))
             self._capture_key_state()
         elif event_type == EV_ABS:
             sample_value = float(value if normalized is None else normalized)
@@ -133,61 +133,78 @@ class DiscoverySession:
         keys = sorted(
             key for key in set(self.current) | set(self.baseline) if key.startswith("1:")
         )
-        self.key_states.add(tuple((key, int(self.current.get(key, 0) != 0)) for key in keys))
+        self.key_states.add(
+            tuple((key, int(self._key_pressed(key, self.current.get(key, 0)))) for key in keys)
+        )
+
+    def _key_pressed(self, key: str, value: int) -> bool:
+        return value != self.baseline.get(key, 0)
 
     def _classify(self) -> LogicalControl | None:
-        key_sources = sorted(
-            key for key in self.changed_inputs if key.startswith(f"{EV_KEY}:")
-        )
-        if len(key_sources) == 2:
-            states = {
-                tuple(dict(state).get(key, 0) for key in key_sources)
-                for state in self.key_states
-            }
-            if {(0, 0), (1, 0), (0, 1)} <= states and (1, 1) not in states:
-                first, second = (self._input(key) for key in key_sources)
-                return LogicalControl(
-                    id=uuid4().hex,
-                    name="Three-position switch",
-                    kind="switch3",
-                    sources=[first, second],
-                    positions=[
-                        LogicalPosition(
-                            "left", "Left",
-                            [Predicate(first, "pressed"), Predicate(second, "released")],
-                        ),
-                        LogicalPosition(
-                            "center", "Center",
-                            [Predicate(first, "released"), Predicate(second, "released")],
-                        ),
-                        LogicalPosition(
-                            "right", "Right",
-                            [Predicate(first, "released"), Predicate(second, "pressed")],
-                        ),
-                    ],
-                    confidence=0.98,
-                    confirmed=False,
-                )
-        if len(key_sources) == 1:
-            source = self._input(key_sources[0])
-            return LogicalControl(
-                id=uuid4().hex,
-                name="Button",
-                kind="button",
-                sources=[source],
-                positions=[
-                    LogicalPosition("pressed", "Pressed", [Predicate(source, "pressed")])
-                ],
-                confidence=0.95,
-                confirmed=False,
-            )
+        key_activity = self._key_activity()
+        abs_activity = self._abs_activity()
+        if key_activity and (
+            not abs_activity
+            or max(key_activity.values()) >= max(abs_activity.values())
+        ):
+            candidate = self._classify_keys(key_activity)
+            if candidate is not None:
+                return candidate
+        if abs_activity:
+            primary_abs = max(abs_activity, key=abs_activity.get)
+            return self._classify_abs(primary_abs)
+        return self._classify_keys(key_activity)
 
-        abs_sources = sorted(
-            key for key in self.changed_inputs if key.startswith(f"{EV_ABS}:")
-        )
-        if len(abs_sources) != 1:
+    def _key_activity(self) -> dict[str, int]:
+        activity: dict[str, int] = {}
+        for key in self.changed_inputs:
+            if not key.startswith(f"{EV_KEY}:"):
+                continue
+            samples = self.samples.get(key, [])
+            transitions = sum(
+                1
+                for index in range(1, len(samples))
+                if samples[index] != samples[index - 1]
+            )
+            activity[key] = max(len(samples), transitions * 2, 1)
+        return activity
+
+    def _abs_activity(self) -> dict[str, int]:
+        activity: dict[str, int] = {}
+        for key in self.changed_inputs:
+            if not key.startswith(f"{EV_ABS}:"):
+                continue
+            samples = self.samples.get(key, [])
+            if not samples:
+                continue
+            baseline = self.baseline_normalized.get(key)
+            if baseline is not None:
+                moved = sum(
+                    1
+                    for value in samples
+                    if abs(value - baseline) > ABS_ACTIVE_THRESHOLD
+                )
+            else:
+                base = self.baseline.get(key, 0)
+                moved = sum(1 for value in samples if abs(value - base) > 32)
+            activity[key] = max(moved, 1)
+        return activity
+
+    def _classify_keys(self, key_activity: dict[str, int]) -> LogicalControl | None:
+        if not key_activity:
             return None
-        key = abs_sources[0]
+        ranked = sorted(key_activity, key=key_activity.__getitem__, reverse=True)
+        if len(ranked) >= 2:
+            for first, second in ((ranked[0], ranked[1]), (ranked[1], ranked[0])):
+                candidate = self._try_switch3(first, second)
+                if candidate is not None:
+                    return candidate
+                candidate = self._try_switch2(first, second)
+                if candidate is not None:
+                    return candidate
+        return self._button_control(ranked[0])
+
+    def _classify_abs(self, key: str) -> LogicalControl | None:
         source = self._input(key)
         values = self.samples[key]
         clusters = self._clusters(values)
@@ -233,6 +250,122 @@ class DiscoverySession:
             sources=[source],
             positions=[],
             confidence=0.35,
+            confirmed=False,
+        )
+
+    def _states_for(self, keys: list[str]) -> set[tuple[int, ...]]:
+        return {
+            tuple(dict(state).get(key, 0) for key in keys)
+            for state in self.key_states
+        }
+
+    def _try_switch3(self, first_key: str, second_key: str) -> LogicalControl | None:
+        keys = [first_key, second_key]
+        states = self._states_for(keys)
+        if (1, 1) in states:
+            return None
+        if not {(0, 0), (1, 0), (0, 1)} <= states:
+            return None
+        first, second = (self._input(key) for key in keys)
+        return LogicalControl(
+            id=uuid4().hex,
+            name="Three-position switch",
+            kind="switch3",
+            sources=[first, second],
+            positions=[
+                LogicalPosition(
+                    "left", "Left",
+                    [Predicate(first, "pressed"), Predicate(second, "released")],
+                ),
+                LogicalPosition(
+                    "center", "Center",
+                    [Predicate(first, "released"), Predicate(second, "released")],
+                ),
+                LogicalPosition(
+                    "right", "Right",
+                    [Predicate(first, "released"), Predicate(second, "pressed")],
+                ),
+            ],
+            confidence=0.98,
+            confirmed=False,
+        )
+
+    def _try_switch2(self, first_key: str, second_key: str) -> LogicalControl | None:
+        keys = [first_key, second_key]
+        states = self._states_for(keys)
+        if (1, 1) in states:
+            return None
+        first, second = (self._input(key) for key in keys)
+        if {(1, 0), (0, 1)} <= states:
+            return LogicalControl(
+                id=uuid4().hex,
+                name="Two-position switch",
+                kind="switch2",
+                sources=[first, second],
+                positions=[
+                    LogicalPosition(
+                        "left", "Left",
+                        [Predicate(first, "pressed"), Predicate(second, "released")],
+                    ),
+                    LogicalPosition(
+                        "right", "Right",
+                        [Predicate(first, "released"), Predicate(second, "pressed")],
+                    ),
+                ],
+                confidence=0.92,
+                confirmed=False,
+            )
+        if {(0, 0), (1, 0)} <= states:
+            return LogicalControl(
+                id=uuid4().hex,
+                name="Two-position switch",
+                kind="switch2",
+                sources=[first, second],
+                positions=[
+                    LogicalPosition(
+                        "off", "Off",
+                        [Predicate(first, "released"), Predicate(second, "released")],
+                    ),
+                    LogicalPosition(
+                        "on", "On",
+                        [Predicate(first, "pressed"), Predicate(second, "released")],
+                    ),
+                ],
+                confidence=0.9,
+                confirmed=False,
+            )
+        if {(0, 0), (0, 1)} <= states:
+            return LogicalControl(
+                id=uuid4().hex,
+                name="Two-position switch",
+                kind="switch2",
+                sources=[first, second],
+                positions=[
+                    LogicalPosition(
+                        "off", "Off",
+                        [Predicate(first, "released"), Predicate(second, "released")],
+                    ),
+                    LogicalPosition(
+                        "on", "On",
+                        [Predicate(first, "released"), Predicate(second, "pressed")],
+                    ),
+                ],
+                confidence=0.9,
+                confirmed=False,
+            )
+        return None
+
+    def _button_control(self, key: str) -> LogicalControl:
+        source = self._input(key)
+        return LogicalControl(
+            id=uuid4().hex,
+            name="Button",
+            kind="button",
+            sources=[source],
+            positions=[
+                LogicalPosition("pressed", "Pressed", [Predicate(source, "pressed")])
+            ],
+            confidence=0.95,
             confirmed=False,
         )
 
