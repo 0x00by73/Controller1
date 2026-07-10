@@ -1,0 +1,11 @@
+node_modules/
+.pnpm-store/
+dist/
+out/
+backend/out/
+py_modules/
+__pycache__/
+*.py[cod]
+.coverage
+.DS_Store
+.env

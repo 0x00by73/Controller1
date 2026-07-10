@@ -1,0 +1,10 @@
+{
+  "name": "Controller1",
+  "author": "Martin",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["controller", "input", "remapping", "root"],
+    "description": "Persistent controller calibration, chords, layers, and virtual output for SteamOS."
+  }
+}
