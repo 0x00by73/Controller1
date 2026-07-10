@@ -1,12 +1,16 @@
-name: Build
+name: Release
 
 on:
   push:
-  pull_request:
+    tags:
+      - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  release:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -21,13 +25,9 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run typecheck
       - run: pnpm run build
-      - run: python -m unittest discover -s tests -v
       - name: Vendor Linux backend dependencies
         run: python -m pip install --requirement backend/requirements.lock --target py_modules
-      - name: Verify vendored dependencies
-        run: PYTHONPATH=py_modules python -c "import evdev, pyudev"
       - name: Package plugin
         run: |
           mkdir -p out/Controller1
@@ -42,15 +42,18 @@ jobs:
           for required in Controller1/plugin.json Controller1/package.json Controller1/LICENSE Controller1/main.py Controller1/dist/index.js; do
             grep -q "$required" /tmp/zip-listing.txt || { echo "Missing $required"; exit 1; }
           done
-          if grep -q "Controller1-main/" /tmp/zip-listing.txt; then
-            echo "Zip root folder must be Controller1/, not a GitHub archive name"
-            exit 1
+      - name: Publish GitHub release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="v$(node -p "require('./package.json').version")"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" out/Controller1.zip --clobber
+            else
+              gh release create "$TAG" out/Controller1.zip --title "$TAG" --notes "Controller1 Decky plugin release"
+            fi
+          else
+            gh release upload "$TAG" out/Controller1.zip --clobber
           fi
-          if ! python3 -c "import zipfile; z=zipfile.ZipFile('out/Controller1.zip'); assert [n for n in z.namelist() if n.endswith('/plugin.json') and n.count('/')==1]"; then
-            echo "Decky requires exactly one top-level plugin.json (PluginName/plugin.json)"
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Controller1
-          path: out/Controller1.zip

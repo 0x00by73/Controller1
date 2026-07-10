@@ -56,8 +56,30 @@ python3 -m unittest discover -s tests -v
 
 `make -C backend vendor` builds `python-evdev` and `pyudev` against CPython
 3.11 into Decky's first-class `py_modules/` directory. Do not build or package
-`py_modules/` on macOS. The GitHub
-workflow performs this step and produces an installable `Controller1.zip`.
+`py_modules/` on macOS. The GitHub workflow performs this step and produces an
+installable `Controller1.zip`.
+
+## Install from URL (Decky Developer Mode)
+
+Decky expects a **direct URL to a built plugin zip**, not a GitHub repo page or
+Actions artifact link.
+
+1. Enable **Developer Mode** in Decky settings.
+2. Open the **Developer** tab.
+3. Paste this URL into **Install Plugin from URL**:
+
+   `https://github.com/0x00by73/Controller1/releases/latest/download/Controller1.zip`
+
+Do **not** use:
+
+- `https://github.com/0x00by73/Controller1` (repo page, not a zip)
+- `https://github.com/0x00by73/Controller1/archive/refs/heads/main.zip` (source
+  archive, no built `dist/index.js`)
+- GitHub Actions artifact download URLs (zip-in-zip wrapper with no top-level
+  `plugin.json`, which hangs Decky on "Parsing zip")
+
+The release zip must contain exactly one top-level folder named `Controller1/`
+with `plugin.json`, `package.json`, `LICENSE`, `main.py`, and `dist/index.js`.
 
 ## Device-side verification
 
