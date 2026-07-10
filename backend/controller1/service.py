@@ -35,7 +35,10 @@ class ControllerService:
         self.learn_baseline: dict[str, int] = {}
         self.learn_thresholds: dict[str, int] = {}
         self.learn_started = 0.0
-        self.last_raw_emit = 0.0
+        self.live_values: dict[str, int] = {}
+        self.last_live_snapshot_emit = 0.0
+        self.live_snapshot_revision = 0
+        self.live_snapshot_task: asyncio.Task[None] | None = None
         self.calibration_active = False
         self.calibration_profile_id: str | None = None
         self.calibration_device_id: str | None = None
@@ -101,6 +104,7 @@ class ControllerService:
             self.calibration_snapshot_task.cancel()
             await asyncio.gather(self.calibration_snapshot_task, return_exceptions=True)
             self.calibration_snapshot_task = None
+        await self._cancel_live_snapshot()
         for task in self.emit_tasks:
             task.cancel()
         await asyncio.gather(*self.emit_tasks, return_exceptions=True)
@@ -270,6 +274,7 @@ class ControllerService:
     async def begin_calibration(self, inputs: list[dict[str, Any]]) -> None:
         if not self.devices or not self.devices.active_device or not self.evdev:
             raise RuntimeError("enable and select a controller before calibrating")
+        await self._cancel_live_snapshot()
         await self._cancel_calibration_snapshot()
         await self._cancel_calibration_persist()
         profile = self.store.active_profile
@@ -367,8 +372,12 @@ class ControllerService:
             return
         self.outputs.open()
         await self.devices.select(device_id)
+        self._seed_live_values()
+        await self.emit("input_snapshot", self._live_snapshot())
 
     async def _deactivate(self) -> None:
+        await self._cancel_live_snapshot()
+        self.live_values.clear()
         if self.engine:
             self.engine.release_all()
         if self.devices:
@@ -381,8 +390,9 @@ class ControllerService:
         if self.engine:
             self.engine.process(int(event.type), int(event.code), int(event.value))
         key = f"{event.type}:{event.code}"
+        value = int(event.value)
+        self.live_values[key] = value
         if self.calibration_active:
-            value = int(event.value)
             self.calibration_values[key] = value
             e = self.evdev.ecodes
             if event.type == e.EV_KEY and value:
@@ -395,20 +405,67 @@ class ControllerService:
                 sample["max"] = max(sample["max"], value)
             self._queue_calibration_snapshot()
             self._queue_calibration_persist()
+        else:
+            self._queue_live_snapshot()
         if self.learning:
             self._observe_learning(event)
-        now = time.monotonic()
-        if not self.calibration_active and now - self.last_raw_emit >= 1 / 60:
-            self.last_raw_emit = now
-            self._schedule_emit(
-                "raw_input",
-                {
-                    "eventType": int(event.type),
-                    "code": int(event.code),
-                    "value": int(event.value),
-                    "name": self._event_name(int(event.type), int(event.code)),
-                },
-            )
+
+    def _live_snapshot(self) -> dict[str, Any]:
+        return {
+            "values": dict(self.live_values),
+            "axisRanges": {},
+            "pressedButtons": [],
+        }
+
+    def _queue_live_snapshot(self) -> None:
+        self.live_snapshot_revision += 1
+        if self.live_snapshot_task:
+            return
+        self.live_snapshot_task = asyncio.get_running_loop().create_task(
+            self._emit_live_snapshots(),
+            name="controller1-live-snapshot",
+        )
+
+    async def _emit_live_snapshots(self) -> None:
+        try:
+            while True:
+                delay = max(
+                    0.0,
+                    (1 / 60) - (time.monotonic() - self.last_live_snapshot_emit),
+                )
+                if delay:
+                    await asyncio.sleep(delay)
+                revision = self.live_snapshot_revision
+                self.last_live_snapshot_emit = time.monotonic()
+                await self.emit("input_snapshot", self._live_snapshot())
+                if revision == self.live_snapshot_revision:
+                    break
+        finally:
+            self.live_snapshot_task = None
+
+    async def _cancel_live_snapshot(self) -> None:
+        if not self.live_snapshot_task:
+            return
+        self.live_snapshot_task.cancel()
+        await asyncio.gather(self.live_snapshot_task, return_exceptions=True)
+        self.live_snapshot_task = None
+
+    def _seed_live_values(self) -> None:
+        self.live_values.clear()
+        if not self.devices or not self.devices.active_device or not self.evdev:
+            return
+        device = self.devices.active_device
+        e = self.evdev.ecodes
+        capabilities = device.capabilities(absinfo=False)
+        for code in capabilities.get(e.EV_ABS, []):
+            try:
+                self.live_values[f"{e.EV_ABS}:{code}"] = int(device.absinfo(code).value)
+            except (AttributeError, OSError, TypeError, ValueError):
+                continue
+        for code in capabilities.get(e.EV_KEY, []):
+            self.live_values[f"{e.EV_KEY}:{code}"] = 0
+        for code in device.active_keys():
+            self.live_values[f"{e.EV_KEY}:{code}"] = 1
 
     def _calibration_snapshot(self) -> dict[str, Any]:
         return {

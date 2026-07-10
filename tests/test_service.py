@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,6 +184,21 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
             ["1:304", "1:305"],
         )
         self.assertFalse((await self.service.get_status())["calibrating"])
+
+    async def test_live_snapshot_keeps_trailing_axis_and_button_state(self):
+        self.service.engine = FakeEngine()
+        self.service.last_live_snapshot_emit = time.monotonic()
+
+        self.service._on_input(SimpleNamespace(type=3, code=0, value=-100))
+        self.service._on_input(SimpleNamespace(type=3, code=0, value=100))
+        self.service._on_input(SimpleNamespace(type=1, code=304, value=1))
+        self.service._on_input(SimpleNamespace(type=1, code=304, value=0))
+        await asyncio.sleep(0.03)
+
+        snapshots = [args[0] for event, *args in self.events if event == "input_snapshot"]
+        self.assertGreaterEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[-1]["values"]["3:0"], 100)
+        self.assertEqual(snapshots[-1]["values"]["1:304"], 0)
 
 
 if __name__ == "__main__":

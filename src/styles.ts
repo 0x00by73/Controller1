@@ -241,11 +241,149 @@ export const controllerStyles = `
 .Controller1_Modal {
   display: flex;
   flex-direction: column;
+  width: min(680px, calc(100vw - 56px));
+  max-height: min(680px, calc(100vh - 120px));
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: #20242b;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.55);
+}
+
+.Controller1_ModalFrame {
+  max-width: calc(100vw - 32px) !important;
+  max-height: calc(100vh - 48px) !important;
+  overflow: hidden !important;
+}
+
+.Controller1_Modal > *,
+.Controller1_ModalBody > *,
+.Controller1_FormGrid > * {
+  min-width: 0;
+}
+
+.Controller1_ModalHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  flex: none;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  background: linear-gradient(135deg, rgba(26, 159, 255, 0.13), rgba(26, 159, 255, 0.025));
+}
+
+.Controller1_ControlIcon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(90, 187, 255, 0.36);
+  border-radius: 9px;
+  background: rgba(26, 159, 255, 0.16);
+  color: #70c3ff;
+  font-size: 17px;
+}
+
+.Controller1_ModalTitle h2,
+.Controller1_FormHeading h3 {
+  margin: 0;
+}
+
+.Controller1_ModalTitle h2 {
+  overflow: hidden;
+  font-size: 20px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.Controller1_ModalTitle p,
+.Controller1_FormHeading p {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.Controller1_ModalBody {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
   gap: 16px;
-  width: min(720px, 80vw);
-  max-height: 80vh;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px 18px 20px;
+}
+
+.Controller1_MappingBuilder {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.Controller1_FormHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.Controller1_FormHeading h3 {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.Controller1_FormHeading--compact {
+  align-items: flex-start;
+}
+
+.Controller1_FormGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.Controller1_RangeEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 12px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.Controller1_RangeValue {
+  flex: none;
+  color: #83cbff;
+  font: 12px monospace;
+  white-space: nowrap;
+}
+
+.Controller1_Actions--primary > :last-child {
+  min-width: 150px;
+}
+
+.Controller1_Assigned {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.Controller1_ModalFooter {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .Controller1_Stack {
@@ -283,6 +421,10 @@ export const controllerStyles = `
   text-align: center;
 }
 
+.Controller1_Empty--compact {
+  padding: 15px;
+}
+
 .Controller1_MappingRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -296,10 +438,12 @@ export const controllerStyles = `
 .Controller1_MappingRoute {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 9px;
   margin-top: 6px;
   color: rgba(255, 255, 255, 0.62);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .Controller1_Error {
@@ -318,6 +462,17 @@ export const controllerStyles = `
 @media (max-width: 900px) {
   .Controller1_Grid--three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .Controller1_Modal {
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 72px);
+  }
+
+  .Controller1_FormGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 `;

@@ -617,50 +617,67 @@ function MappingBuilder({
   };
 
   return (
-    <div className="Controller1_Card Controller1_Stack">
-      <DropdownItem
-        label="Output type"
-        rgOptions={(Object.keys(ACTION_LABELS) as Action["type"][])
-          .map((type) => ({ data: type, label: ACTION_LABELS[type] }))}
-        selectedOption={actionType}
-        onChange={(option) => setActionType(option.data as Action["type"])}
-      />
-      {customOutput ? (
-        <TextField
-          label={actionType === "layer" ? "Layer name" : "Shortcut"}
-          description={actionType === "keyCombo" ? "Example: KEY_LEFTCTRL+KEY_C" : undefined}
-          value={outputCode}
-          onChange={(event) => setOutputCode(event.currentTarget.value)}
-        />
-      ) : (
+    <section className="Controller1_MappingBuilder">
+      <div className="Controller1_FormHeading">
+        <div>
+          <h3>New mapping</h3>
+          <p>Choose what this control should emit.</p>
+        </div>
+      </div>
+      <div className="Controller1_FormGrid">
         <DropdownItem
-          label="Virtual output"
-          rgOptions={outputs.map((option) => ({
-            data: option.code,
-            label: option.name ? `${option.name} · ${option.code}` : option.code,
-          }))}
-          selectedOption={outputCode}
-          onChange={(option) => setOutputCode(String(option.data))}
+          label="Output type"
+          rgOptions={(Object.keys(ACTION_LABELS) as Action["type"][])
+            .map((type) => ({ data: type, label: ACTION_LABELS[type] }))}
+          selectedOption={actionType}
+          onChange={(option) => setActionType(option.data as Action["type"])}
         />
-      )}
+        {customOutput ? (
+          <TextField
+            label={actionType === "layer" ? "Layer name" : "Shortcut"}
+            description={actionType === "keyCombo" ? "Example: KEY_LEFTCTRL+KEY_C" : undefined}
+            value={outputCode}
+            onChange={(event) => setOutputCode(event.currentTarget.value)}
+          />
+        ) : (
+          <DropdownItem
+            label="Virtual output"
+            rgOptions={outputs.map((option) => ({
+              data: option.code,
+              label: option.name && option.name !== option.code
+                ? `${option.name} · ${option.code}`
+                : option.code,
+            }))}
+            selectedOption={outputCode}
+            onChange={(option) => setOutputCode(String(option.data))}
+          />
+        )}
+      </div>
       {source?.eventType === 3 && actionType !== "gamepadAxis" && actionType !== "mouseMove" && (
-        <>
-          <SliderField label="Range start" value={low} min={-1} max={1} step={0.05} showValue onChange={setLow} />
-          <SliderField label="Range end" value={high} min={-1} max={1} step={0.05} showValue onChange={setHigh} />
-        </>
+        <div className="Controller1_RangeEditor">
+          <div className="Controller1_FormHeading Controller1_FormHeading--compact">
+            <div>
+              <h3>Active range</h3>
+              <p>Trigger only while the calibrated axis is inside this zone.</p>
+            </div>
+            <span className="Controller1_RangeValue">{low.toFixed(2)} … {high.toFixed(2)}</span>
+          </div>
+          <SliderField label="Start" value={low} min={-1} max={high} step={0.05} onChange={setLow} />
+          <SliderField label="End" value={high} min={low} max={1} step={0.05} onChange={setHigh} />
+        </div>
       )}
       <TextField
         label="Mapping name"
-        description="Optional"
+        description="Optional — a useful name makes profiles easier to scan."
         value={name}
         onChange={(event) => setName(event.currentTarget.value)}
       />
-      <div className="Controller1_Actions">
+      <div className="Controller1_Actions Controller1_Actions--primary">
         <DialogButton disabled={!outputCode.trim()} onClick={submit}>
           Save mapping
         </DialogButton>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -739,47 +756,71 @@ function ControlMappingModal({
   };
 
   return (
-    <ModalRoot closeModal={closeModal} onCancel={closeModal} bAllowFullSize>
+    <ModalRoot
+      closeModal={closeModal}
+      onCancel={closeModal}
+      className="Controller1_ModalRoot"
+      modalClassName="Controller1_ModalFrame"
+    >
       <Focusable className="Controller1 Controller1_Modal" flow-children="column">
-        <PageHeader
-          title={input.name}
-          description={`${inputType(input)} ${input.code} · route this physical control to a virtual output.`}
-          badge={<span className="Controller1_Badge">{mappings.length} mappings</span>}
-        />
-        <MappingBuilder
-          profileId={profile.id}
-          source={input}
-          catalog={catalog}
-          onSaved={saved}
-        />
-        <PageHeader title="Assigned outputs" description="Mappings in the active profile." />
-        {mappings.length === 0 ? (
-          <div className="Controller1_Empty">Nothing configured yet.</div>
-        ) : (
-          <div className="Controller1_Stack">
-            {mappings.map((binding) => (
-              <div className="Controller1_MappingRow" key={binding.id}>
-                <div>
-                  <strong>{binding.name}</strong>
-                  <div className="Controller1_MappingRoute">
-                    <span>{ACTION_LABELS[binding.action.type]}</span>
-                    <span>→</span>
-                    <span>{binding.action.code || binding.action.codes?.join("+")}</span>
-                  </div>
-                </div>
-                <DialogButton
-                  disabled={!binding.id}
-                  onClick={() => binding.id && remove(binding.id)}
-                >
-                  <FaTrash />
-                </DialogButton>
-              </div>
-            ))}
+        <header className="Controller1_ModalHeader">
+          <div className="Controller1_ControlIcon" aria-hidden="true">
+            {input.eventType === 3 ? <FaSlidersH /> : <FaGamepad />}
           </div>
-        )}
-        <div className="Controller1_Actions">
-          <DialogButton onClick={closeModal}>Done</DialogButton>
+          <div className="Controller1_ModalTitle">
+            <h2>{input.name}</h2>
+            <p>{inputType(input)} · code {input.code} · {profile.name} profile</p>
+          </div>
+          <span className="Controller1_Badge">
+            {mappings.length} {mappings.length === 1 ? "mapping" : "mappings"}
+          </span>
+        </header>
+        <div className="Controller1_ModalBody">
+          <MappingBuilder
+            profileId={profile.id}
+            source={input}
+            catalog={catalog}
+            onSaved={saved}
+          />
+          <section className="Controller1_Assigned">
+            <div className="Controller1_FormHeading">
+              <div>
+                <h3>Assigned outputs</h3>
+                <p>Mappings already attached to this control.</p>
+              </div>
+            </div>
+            {mappings.length === 0 ? (
+              <div className="Controller1_Empty Controller1_Empty--compact">
+                No outputs yet. Save a mapping above to add one.
+              </div>
+            ) : (
+              <div className="Controller1_Stack">
+                {mappings.map((binding) => (
+                  <div className="Controller1_MappingRow" key={binding.id}>
+                    <div>
+                      <strong>{binding.name}</strong>
+                      <div className="Controller1_MappingRoute">
+                        <span>{ACTION_LABELS[binding.action.type]}</span>
+                        <span>→</span>
+                        <span>{binding.action.code || binding.action.codes?.join("+")}</span>
+                      </div>
+                    </div>
+                    <DialogButton
+                      aria-label={`Delete ${binding.name}`}
+                      disabled={!binding.id}
+                      onClick={() => binding.id && remove(binding.id)}
+                    >
+                      <FaTrash />
+                    </DialogButton>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
+        <footer className="Controller1_ModalFooter">
+          <DialogButton onClick={closeModal}>Done</DialogButton>
+        </footer>
       </Focusable>
     </ModalRoot>
   );
@@ -802,7 +843,7 @@ function showControlMappingModal(
       onChanged={onChanged}
     />,
     window,
-    { strTitle: `Map ${input.name}` },
+    { strTitle: "" },
   );
 }
 
