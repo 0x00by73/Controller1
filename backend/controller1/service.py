@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import stat
 import subprocess
 import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -14,6 +18,21 @@ from .outputs import VirtualOutputs
 from .store import ProfileStore
 
 Emitter = Callable[..., Awaitable[None]]
+
+
+class DiagnosticLogger:
+    def __init__(self, logger: Any, sink: Callable[..., None]) -> None:
+        self.logger = logger
+        self.sink = sink
+
+    def __getattr__(self, level: str) -> Callable[[Any], None]:
+        def write(message: Any) -> None:
+            self.sink("component_log", level=level, message=str(message))
+            target = getattr(self.logger, level, None)
+            if target:
+                target(message)
+
+        return write
 
 
 class ControllerService:
@@ -50,8 +69,17 @@ class ControllerService:
         self.calibration_snapshot_task: asyncio.Task[None] | None = None
         self.calibration_persist_task: asyncio.Task[None] | None = None
         self.emit_tasks: set[asyncio.Task[None]] = set()
+        self.debug_started = time.time()
+        self.debug_lifecycle: deque[dict[str, Any]] = deque(maxlen=100)
+        self.debug_inputs: deque[dict[str, Any]] = deque(maxlen=80)
+        self.debug_outputs: deque[dict[str, Any]] = deque(maxlen=80)
+        self.input_event_count = 0
+        self.output_event_count = 0
+        self.dropped_output_count = 0
+        self.component_logger = DiagnosticLogger(logger, self._debug)
 
     async def start(self) -> None:
+        self._debug("service_start")
         self.store.load()
         self._ensure_uinput()
         try:
@@ -69,15 +97,16 @@ class ControllerService:
             self.evdev,
             self.store.state["outputGamepadName"],
             self.store.state["outputKeyboardName"],
+            self._on_output_emit,
         )
-        self.engine = MappingEngine(self.outputs, self.logger)
+        self.engine = MappingEngine(self.outputs, self.component_logger)
         self.engine.set_profile(self.store.active_profile)
         self.devices = DeviceManager(
             self.evdev,
             self._on_input,
             self._on_devices_changed,
             self._on_disconnect,
-            self.logger,
+            self.component_logger,
         )
         await self.devices.start()
         if self.store.state["enabled"]:
@@ -91,6 +120,7 @@ class ControllerService:
                     self.outputs.close()
 
     async def stop(self) -> None:
+        self._debug("service_stop")
         if self.calibration_active:
             await self._persist_calibration_progress()
         await self._cancel_calibration_persist()
@@ -212,6 +242,51 @@ class ControllerService:
                 raise RuntimeError(self.dependency_error)
             raise RuntimeError("Controller1 virtual outputs are unavailable")
         return self.outputs.catalog()
+
+    async def get_debug_report(self) -> dict[str, str]:
+        profile = self.store.active_profile
+        active_device = self.devices.active_device if self.devices else None
+        report = {
+            "generatedAt": self._timestamp(),
+            "service": {
+                "uptimeSeconds": round(time.time() - self.debug_started, 1),
+                "enabled": bool(self.store.state["enabled"]),
+                "dependencyError": self.dependency_error,
+                "activeProfile": {
+                    "id": profile.id,
+                    "name": profile.name,
+                    "deviceId": profile.device_id,
+                    "bindingCount": len(profile.bindings),
+                    "calibrationCount": len(profile.calibrations),
+                },
+                "selectedDeviceId": getattr(self.devices, "selected_id", None),
+                "activeDevicePath": getattr(active_device, "path", None),
+                "readerTask": self._task_state(
+                    getattr(self.devices, "reader_task", None)
+                ),
+                "scanTask": self._task_state(
+                    getattr(self.devices, "scan_task", None)
+                ),
+            },
+            "virtualOutputs": {
+                "gamepad": self._describe_virtual_output(
+                    getattr(self.outputs, "gamepad", None)
+                ),
+                "keyboardMouse": self._describe_virtual_output(
+                    getattr(self.outputs, "keyboard", None)
+                ),
+            },
+            "physicalDevices": list(self.devices.devices.values()) if self.devices else [],
+            "eventCounters": {
+                "physicalRead": self.input_event_count,
+                "virtualEmitted": self.output_event_count,
+                "virtualDropped": self.dropped_output_count,
+            },
+            "recentLifecycle": list(self.debug_lifecycle),
+            "recentPhysicalInput": list(self.debug_inputs),
+            "recentVirtualOutput": list(self.debug_outputs),
+        }
+        return {"text": json.dumps(report, indent=2, sort_keys=True)}
 
     async def set_profile(self, profile_id: str) -> dict[str, Any]:
         profile = self.store.set_active(profile_id)
@@ -370,13 +445,21 @@ class ControllerService:
     async def _activate(self, device_id: str | None) -> None:
         if not self.outputs or not self.devices:
             return
+        self._debug("activate_begin", deviceId=device_id)
         self.outputs.open()
         await self.devices.select(device_id)
+        self._debug(
+            "activate_ready",
+            deviceId=device_id,
+            activePath=getattr(self.devices.active_device, "path", None),
+            gamepadPath=self._virtual_path(getattr(self.outputs, "gamepad", None)),
+        )
         self._configure_default_calibrations()
         self._seed_live_values()
         await self.emit("input_snapshot", self._live_snapshot())
 
     async def _deactivate(self) -> None:
+        self._debug("deactivate")
         await self._cancel_live_snapshot()
         self.live_values.clear()
         if self.engine:
@@ -388,6 +471,16 @@ class ControllerService:
         await self.emit("status_changed", await self.get_status())
 
     def _on_input(self, event: Any) -> None:
+        self.input_event_count += 1
+        self.debug_inputs.append(
+            {
+                "at": self._timestamp(),
+                "type": int(event.type),
+                "code": int(event.code),
+                "name": self._event_name(int(event.type), int(event.code)),
+                "value": int(event.value),
+            }
+        )
         if self.engine:
             self.engine.process(int(event.type), int(event.code), int(event.value))
         key = f"{event.type}:{event.code}"
@@ -603,9 +696,18 @@ class ControllerService:
             self._schedule_emit("learning_changed", False)
 
     def _on_devices_changed(self, devices: list[dict[str, Any]]) -> None:
+        self._debug(
+            "devices_changed",
+            count=len(devices),
+            devices=[
+                {"id": item["id"], "name": item["name"], "path": item["path"]}
+                for item in devices
+            ],
+        )
         self._schedule_emit("devices_changed", devices)
 
     def _on_disconnect(self) -> None:
+        self._debug("physical_disconnect")
         if self.engine:
             self.engine.release_all()
         if self.calibration_active:
@@ -624,6 +726,120 @@ class ControllerService:
             return str(code)
         name = self.evdev.ecodes.bytype.get(event_type, {}).get(code, str(code))
         return name[0] if isinstance(name, list) else str(name)
+
+    def _on_output_emit(
+        self, kind: str, code: str, value: int, emitted: bool
+    ) -> None:
+        if emitted:
+            self.output_event_count += 1
+        else:
+            self.dropped_output_count += 1
+        self.debug_outputs.append(
+            {
+                "at": self._timestamp(),
+                "kind": kind,
+                "code": code,
+                "value": value,
+                "emitted": emitted,
+            }
+        )
+
+    def _debug(self, event: str, **details: Any) -> None:
+        self.debug_lifecycle.append(
+            {"at": self._timestamp(), "event": event, **details}
+        )
+
+    def _timestamp(self) -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+    def _task_state(self, task: asyncio.Task[Any] | None) -> str:
+        if task is None:
+            return "missing"
+        if task.cancelled():
+            return "cancelled"
+        if task.done():
+            error = task.exception()
+            return f"failed: {error}" if error else "completed"
+        return "running"
+
+    def _virtual_path(self, output: Any | None) -> str | None:
+        return getattr(getattr(output, "device", None), "path", None)
+
+    def _describe_virtual_output(self, output: Any | None) -> dict[str, Any]:
+        if output is None:
+            return {"open": False}
+        device = getattr(output, "device", None)
+        path = getattr(device, "path", None)
+        details: dict[str, Any] = {
+            "open": True,
+            "configured": {
+                "name": getattr(output, "name", None),
+                "phys": getattr(output, "phys", None),
+                "bus": getattr(output, "bustype", None),
+                "vendor": getattr(output, "vendor", None),
+                "product": getattr(output, "product", None),
+                "version": getattr(output, "version", None),
+            },
+            "devnode": path,
+        }
+        if device is not None:
+            info = getattr(device, "info", None)
+            details["kernel"] = {
+                "name": getattr(device, "name", None),
+                "phys": getattr(device, "phys", None),
+                "bus": getattr(info, "bustype", None),
+                "vendor": getattr(info, "vendor", None),
+                "product": getattr(info, "product", None),
+                "version": getattr(info, "version", None),
+            }
+            try:
+                details["capabilities"] = device.capabilities(absinfo=False)
+            except (OSError, TypeError, ValueError) as error:
+                details["capabilitiesError"] = str(error)
+        if path:
+            details["node"] = self._describe_device_node(path)
+        return details
+
+    def _describe_device_node(self, path: str) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        try:
+            node = os.stat(path)
+            result.update(
+                {
+                    "mode": stat.filemode(node.st_mode),
+                    "modeOctal": oct(stat.S_IMODE(node.st_mode)),
+                    "uid": node.st_uid,
+                    "gid": node.st_gid,
+                }
+            )
+        except OSError as error:
+            result["statError"] = str(error)
+        try:
+            import pyudev
+
+            udev_device = pyudev.Devices.from_device_file(pyudev.Context(), path)
+            result["udev"] = {
+                str(key): str(value)
+                for key, value in udev_device.properties.items()
+                if key.startswith("ID_INPUT")
+                or key in {"DEVNAME", "DEVPATH", "TAGS", "CURRENT_TAGS"}
+            }
+        except (ImportError, OSError, ValueError) as error:
+            result["udevError"] = str(error)
+        getfacl = Path("/usr/bin/getfacl")
+        if getfacl.exists():
+            try:
+                completed = subprocess.run(
+                    [str(getfacl), "-cp", path],
+                    check=False,
+                    timeout=2,
+                    capture_output=True,
+                    text=True,
+                )
+                result["acl"] = completed.stdout.strip() or completed.stderr.strip()
+            except (OSError, subprocess.SubprocessError) as error:
+                result["aclError"] = str(error)
+        return result
 
     def _schedule_emit(self, event: str, *args: Any) -> None:
         task = asyncio.get_running_loop().create_task(self.emit(event, *args))

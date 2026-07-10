@@ -58,6 +58,9 @@ class Plugin:
     async def get_output_catalog(self) -> dict[str, list[dict[str, str]]]:
         return await self._require_service().get_output_catalog()
 
+    async def get_debug_report(self) -> dict[str, str]:
+        return await self._require_service().get_debug_report()
+
     async def set_profile(self, profile_id: str) -> dict[str, Any]:
         return await self._require_service().set_profile(profile_id)
 

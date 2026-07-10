@@ -453,6 +453,22 @@ export const controllerStyles = `
   background: rgba(180, 40, 40, 0.22);
 }
 
+.Controller1_DebugReport {
+  min-height: 360px;
+  max-height: calc(100vh - 230px);
+  margin: 0;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  color: #d8e8f5;
+  font: 12px/1.45 monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .Controller1_QAMStatus {
   padding: 12px;
   border-radius: 6px;

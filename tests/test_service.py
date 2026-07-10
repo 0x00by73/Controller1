@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import tempfile
 import time
@@ -237,6 +238,20 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(snapshots), 1)
         self.assertEqual(snapshots[-1]["values"]["3:0"], 100)
         self.assertEqual(snapshots[-1]["values"]["1:304"], 0)
+
+    async def test_debug_report_captures_pipeline_state_and_events(self):
+        self.service.engine = FakeEngine()
+        self.service._on_input(SimpleNamespace(type=1, code=304, value=1))
+        self.service._on_output_emit("gamepadButton", "BTN_SOUTH", 1, True)
+        await asyncio.sleep(0.02)
+
+        payload = await self.service.get_debug_report()
+        report = json.loads(payload["text"])
+
+        self.assertEqual(report["eventCounters"]["physicalRead"], 1)
+        self.assertEqual(report["eventCounters"]["virtualEmitted"], 1)
+        self.assertEqual(report["recentPhysicalInput"][-1]["code"], 304)
+        self.assertEqual(report["recentVirtualOutput"][-1]["code"], "BTN_SOUTH")
 
     async def test_device_ranges_seed_default_axis_calibration(self):
         self.service.evdev = SimpleNamespace(

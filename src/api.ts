@@ -104,7 +104,12 @@ export type OutputCatalog = {
   layer: OutputOption[];
 };
 
+export type DebugReport = {
+  text: string;
+};
+
 export const getStatus = callable<[], Status>("get_status");
+export const getDebugReport = callable<[], DebugReport>("get_debug_report");
 export const refreshDevices = callable<[], Device[]>("refresh_devices");
 export const setEnabled = callable<[enabled: boolean, deviceId?: string], Status>("set_enabled");
 export const setOutputNames = callable<

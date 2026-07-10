@@ -15,7 +15,14 @@ class FakeUInput:
         self.capabilities = capabilities
         self.kwargs = kwargs
         self.closed = False
+        self.events = []
         self.created.append(self)
+
+    def write(self, event_type, code, value):
+        self.events.append((event_type, code, value))
+
+    def syn(self):
+        self.events.append(("syn",))
 
     def close(self):
         self.closed = True
@@ -96,6 +103,25 @@ class VirtualOutputsTests(unittest.TestCase):
             ("gamepadAxis", "ABS_X"),
         )
         self.assertIsNone(outputs.gamepad_control(e.EV_KEY, e.BTN_LEFT))
+
+    def test_successful_virtual_writes_are_reported(self):
+        emitted = []
+        outputs = VirtualOutputs(
+            fake_evdev(),
+            on_emit=lambda *event: emitted.append(event),
+        )
+        outputs.open()
+
+        outputs.gamepad_button("BTN_SOUTH", True)
+        outputs.gamepad_axis("ABS_X", 0.5)
+
+        self.assertEqual(
+            emitted,
+            [
+                ("gamepadButton", "BTN_SOUTH", 1, True),
+                ("gamepadAxis", "ABS_X", 16384, True),
+            ],
+        )
 
 
 if __name__ == "__main__":

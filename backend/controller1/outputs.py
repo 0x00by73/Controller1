@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .models import DEFAULT_OUTPUT_GAMEPAD_NAME, DEFAULT_OUTPUT_KEYBOARD_NAME
@@ -30,10 +31,12 @@ class VirtualOutputs:
         evdev_module: Any,
         gamepad_name: str = GAMEPAD_NAME,
         keyboard_name: str = KEYBOARD_NAME,
+        on_emit: Callable[[str, str, int, bool], None] | None = None,
     ) -> None:
         self.evdev = evdev_module
         self.gamepad_name = gamepad_name
         self.keyboard_name = keyboard_name
+        self.on_emit = on_emit
         self.gamepad: Any | None = None
         self.keyboard: Any | None = None
 
@@ -172,9 +175,11 @@ class VirtualOutputs:
 
     def key(self, code: str, pressed: bool) -> None:
         if not self.keyboard:
+            self._notify_emit("key", code, int(pressed), False)
             return
         self.keyboard.write(self.evdev.ecodes.EV_KEY, self._code(code), int(pressed))
         self.keyboard.syn()
+        self._notify_emit("key", code, int(pressed), True)
 
     def key_combo(self, codes: list[str], pressed: bool) -> None:
         if not self.keyboard:
@@ -189,19 +194,22 @@ class VirtualOutputs:
 
     def mouse_move(self, code: str, amount: int) -> None:
         if not self.keyboard or amount == 0:
+            if amount:
+                self._notify_emit("mouseMove", code, amount, False)
             return
         self.keyboard.write(self.evdev.ecodes.EV_REL, self._code(code), amount)
         self.keyboard.syn()
+        self._notify_emit("mouseMove", code, amount, True)
 
     def gamepad_button(self, code: str, pressed: bool) -> None:
         if not self.gamepad:
+            self._notify_emit("gamepadButton", code, int(pressed), False)
             return
         self.gamepad.write(self.evdev.ecodes.EV_KEY, self._code(code), int(pressed))
         self.gamepad.syn()
+        self._notify_emit("gamepadButton", code, int(pressed), True)
 
     def gamepad_axis(self, code: str, normalized: float) -> None:
-        if not self.gamepad:
-            return
         axis = self._code(code)
         if axis in (self.evdev.ecodes.ABS_Z, self.evdev.ecodes.ABS_RZ):
             value = round(max(0.0, min(1.0, normalized)) * 255)
@@ -209,8 +217,16 @@ class VirtualOutputs:
             value = round(max(-1.0, min(1.0, normalized)))
         else:
             value = round(max(-1.0, min(1.0, normalized)) * 32767)
+        if not self.gamepad:
+            self._notify_emit("gamepadAxis", code, value, False)
+            return
         self.gamepad.write(self.evdev.ecodes.EV_ABS, axis, value)
         self.gamepad.syn()
+        self._notify_emit("gamepadAxis", code, value, True)
+
+    def _notify_emit(self, kind: str, code: str, value: int, emitted: bool) -> None:
+        if self.on_emit:
+            self.on_emit(kind, code, value, emitted)
 
     def release_all(self, active_actions: list[tuple[str, list[str]]]) -> None:
         for action_type, codes in active_actions:

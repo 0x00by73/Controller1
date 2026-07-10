@@ -18,6 +18,7 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   FaBolt,
+  FaBug,
   FaCheck,
   FaGamepad,
   FaLink,
@@ -38,6 +39,7 @@ import {
   createProfile,
   deleteBinding,
   finishCalibration,
+  getDebugReport,
   getOutputCatalog,
   getStatus,
   refreshDevices,
@@ -1029,6 +1031,68 @@ function ChordsPage({
   );
 }
 
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  document.execCommand("copy");
+  field.remove();
+}
+
+function DebugPage() {
+  const [report, setReport] = useState("Loading diagnostics…");
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      setReport((await getDebugReport()).text);
+    } catch (error) {
+      setReport(`Could not load diagnostics:\n${String(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const copy = async () => {
+    try {
+      await copyText(report);
+      toaster.toast({ title: "Controller1", body: "Debug report copied" });
+    } catch (error) {
+      notifyError(error);
+    }
+  };
+
+  return (
+    <Focusable className="Controller1_Content" flow-children="column">
+      <PageHeader
+        title="Debug"
+        description="Captured physical reads, virtual writes, lifecycle, kernel identity, udev classification, and permissions."
+      />
+      <div className="Controller1_Actions">
+        <DialogButton disabled={loading} onClick={refresh}>
+          {loading ? "Refreshing…" : "Refresh"}
+        </DialogButton>
+        <DialogButton disabled={!report} onClick={copy}>
+          Copy report
+        </DialogButton>
+      </div>
+      <pre className="Controller1_DebugReport">{report}</pre>
+    </Focusable>
+  );
+}
+
 export function ControllerApp() {
   const controller = useController();
   const { status } = controller;
@@ -1086,6 +1150,13 @@ export function ControllerApp() {
                 reload={controller.reload}
               />
             ),
+          },
+          {
+            title: "Debug",
+            identifier: "debug",
+            icon: <FaBug />,
+            padding: "none",
+            content: <DebugPage />,
           },
         ]}
       />
