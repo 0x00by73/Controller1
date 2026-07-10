@@ -129,10 +129,7 @@ class DeviceManager:
         info = device.info
         caps = self._capabilities(device)
         e = self.evdev.ecodes
-        axes = [
-            {"code": int(code), "name": self._event_name(e.EV_ABS, int(code))}
-            for code in caps.get(e.EV_ABS, [])
-        ]
+        axes = self._describe_axes(device, caps.get(e.EV_ABS, []))
         buttons = [
             {"code": int(code), "name": self._event_name(e.EV_KEY, int(code))}
             for code in caps.get(e.EV_KEY, [])
@@ -150,6 +147,41 @@ class DeviceManager:
             axes=axes,
             buttons=buttons,
         )
+
+    def _describe_axes(self, device: Any, codes: list[int]) -> list[dict[str, Any]]:
+        e = self.evdev.ecodes
+        capability_info: dict[int, Any] = {}
+        try:
+            for item in device.capabilities(absinfo=True).get(e.EV_ABS, []):
+                if isinstance(item, tuple) and len(item) >= 2:
+                    capability_info[int(item[0])] = item[1]
+        except (OSError, TypeError, ValueError):
+            pass
+
+        axes = []
+        for raw_code in codes:
+            code = int(raw_code)
+            abs_info = capability_info.get(code)
+            if abs_info is None:
+                try:
+                    abs_info = device.absinfo(code)
+                except (AttributeError, OSError, TypeError, ValueError):
+                    pass
+            value = getattr(abs_info, "value", None)
+            axes.append(
+                {
+                    "code": code,
+                    "name": self._event_name(e.EV_ABS, code),
+                    "min": getattr(abs_info, "min", None),
+                    "max": getattr(abs_info, "max", None),
+                    "flat": getattr(abs_info, "flat", None),
+                    "fuzz": getattr(abs_info, "fuzz", None),
+                    "resolution": getattr(abs_info, "resolution", None),
+                    "value": value,
+                    "initialValue": value,
+                }
+            )
+        return axes
 
     def _describe_from_sysfs(self, path: str) -> dict[str, Any] | None:
         sysfs = Path("/sys/class/input") / Path(path).name / "device"

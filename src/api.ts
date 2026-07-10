@@ -51,7 +51,16 @@ export type Device = {
   name: string;
   vendor: number;
   product: number;
-  axes: Array<{ code: number; name: string }>;
+  axes: Array<{
+    code: number;
+    name: string;
+    min?: number | null;
+    max?: number | null;
+    value?: number | null;
+    flat?: number | null;
+    fuzz?: number | null;
+    resolution?: number | null;
+  }>;
   buttons: Array<{ code: number; name: string }>;
   active: boolean;
 };
@@ -63,14 +72,43 @@ export type Status = {
   devices: Device[];
   dependencyError: string | null;
   learning: boolean;
+  calibrating: boolean;
+  outputGamepadName: string;
+  outputKeyboardName: string;
+};
+
+export type InputSnapshot = {
+  values: Record<string, number>;
+  axisRanges: Record<string, { min: number; max: number }>;
+  pressedButtons: string[];
+};
+
+export type OutputOption = {
+  code: string;
+  name?: string;
+};
+
+export type OutputCatalog = {
+  key: OutputOption[];
+  keyCombo: OutputOption[];
+  mouseButton: OutputOption[];
+  mouseMove: OutputOption[];
+  gamepadButton: OutputOption[];
+  gamepadAxis: OutputOption[];
+  layer: OutputOption[];
 };
 
 export const getStatus = callable<[], Status>("get_status");
 export const refreshDevices = callable<[], Device[]>("refresh_devices");
 export const setEnabled = callable<[enabled: boolean, deviceId?: string], Status>("set_enabled");
+export const setOutputNames = callable<
+  [gamepadName: string, keyboardName: string],
+  Status
+>("set_output_names");
 export const setProfile = callable<[profileId: string], Status>("set_profile");
 export const createProfile = callable<[name: string], Profile>("create_profile");
 export const deleteProfile = callable<[profileId: string], Status>("delete_profile");
+export const getOutputCatalog = callable<[], OutputCatalog>("get_output_catalog");
 export const saveBinding = callable<[profileId: string, binding: Binding], Binding>("save_binding");
 export const deleteBinding = callable<[profileId: string, bindingId: string], Profile>("delete_binding");
 export const startLearning = callable<[], void>("start_learning");

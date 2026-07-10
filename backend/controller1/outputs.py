@@ -2,29 +2,56 @@ from __future__ import annotations
 
 from typing import Any
 
+from .models import DEFAULT_OUTPUT_GAMEPAD_NAME, DEFAULT_OUTPUT_KEYBOARD_NAME
+
 
 class VirtualOutputs:
-    GAMEPAD_NAME = "Controller1 Virtual Gamepad"
-    KEYBOARD_NAME = "Controller1 Virtual Keyboard and Mouse"
+    GAMEPAD_NAME = DEFAULT_OUTPUT_GAMEPAD_NAME
+    KEYBOARD_NAME = DEFAULT_OUTPUT_KEYBOARD_NAME
     PHYS = "controller1/virtual"
+    GAMEPAD_BUTTON_NAMES = (
+        "BTN_SOUTH", "BTN_EAST", "BTN_NORTH", "BTN_WEST",
+        "BTN_TL", "BTN_TR", "BTN_TL2", "BTN_TR2",
+        "BTN_SELECT", "BTN_START", "BTN_MODE",
+        "BTN_THUMBL", "BTN_THUMBR",
+    )
+    GAMEPAD_AXIS_NAMES = (
+        "ABS_X", "ABS_Y", "ABS_RX", "ABS_RY",
+        "ABS_Z", "ABS_RZ", "ABS_HAT0X", "ABS_HAT0Y",
+    )
+    MOUSE_BUTTON_NAMES = (
+        "BTN_LEFT", "BTN_RIGHT", "BTN_MIDDLE", "BTN_SIDE",
+        "BTN_EXTRA", "BTN_FORWARD", "BTN_BACK", "BTN_TASK",
+    )
+    MOUSE_MOVE_NAMES = ("REL_X", "REL_Y", "REL_WHEEL", "REL_HWHEEL")
 
-    def __init__(self, evdev_module: Any) -> None:
+    def __init__(
+        self,
+        evdev_module: Any,
+        gamepad_name: str = GAMEPAD_NAME,
+        keyboard_name: str = KEYBOARD_NAME,
+    ) -> None:
         self.evdev = evdev_module
+        self.gamepad_name = gamepad_name
+        self.keyboard_name = keyboard_name
         self.gamepad: Any | None = None
         self.keyboard: Any | None = None
 
-    def open(self) -> None:
+    def open(
+        self,
+        gamepad_name: str | None = None,
+        keyboard_name: str | None = None,
+    ) -> None:
         if self.gamepad or self.keyboard:
             return
+        if gamepad_name is not None:
+            self.gamepad_name = gamepad_name
+        if keyboard_name is not None:
+            self.keyboard_name = keyboard_name
         e = self.evdev.ecodes
         abs_info = self.evdev.AbsInfo
         gamepad_caps = {
-            e.EV_KEY: [
-                e.BTN_SOUTH, e.BTN_EAST, e.BTN_NORTH, e.BTN_WEST,
-                e.BTN_TL, e.BTN_TR, e.BTN_TL2, e.BTN_TR2,
-                e.BTN_SELECT, e.BTN_START, e.BTN_MODE,
-                e.BTN_THUMBL, e.BTN_THUMBR,
-            ],
+            e.EV_KEY: self._named_codes(self.GAMEPAD_BUTTON_NAMES),
             e.EV_ABS: [
                 (e.ABS_X, abs_info(0, -32768, 32767, 128, 256, 0)),
                 (e.ABS_Y, abs_info(0, -32768, 32767, 128, 256, 0)),
@@ -36,31 +63,16 @@ class VirtualOutputs:
                 (e.ABS_HAT0Y, abs_info(0, -1, 1, 0, 0, 0)),
             ],
         }
-        key_max = getattr(e, "KEY_MAX", 0x2FF)
-        keyboard_keys = {
-            int(value)
-            for name, value in vars(e).items()
-            if name.startswith("KEY_")
-            and name not in {"KEY_MAX", "KEY_CNT"}
-            and isinstance(value, int)
-            and 0 < value <= key_max
-        }
-        keyboard_keys.update(
-            getattr(e, name)
-            for name in (
-                "BTN_LEFT", "BTN_RIGHT", "BTN_MIDDLE", "BTN_SIDE",
-                "BTN_EXTRA", "BTN_FORWARD", "BTN_BACK", "BTN_TASK",
-            )
-            if hasattr(e, name)
-        )
+        keyboard_keys = set(self._keyboard_codes().values())
+        keyboard_keys.update(self._named_codes(self.MOUSE_BUTTON_NAMES))
         keyboard_caps = {
             e.EV_KEY: sorted(keyboard_keys),
-            e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL, e.REL_HWHEEL],
+            e.EV_REL: self._named_codes(self.MOUSE_MOVE_NAMES),
         }
         try:
             self.gamepad = self.evdev.UInput(
                 gamepad_caps,
-                name=self.GAMEPAD_NAME,
+                name=self.gamepad_name,
                 vendor=0x045E,
                 product=0x028E,
                 version=0x0114,
@@ -69,7 +81,7 @@ class VirtualOutputs:
             )
             self.keyboard = self.evdev.UInput(
                 keyboard_caps,
-                name=self.KEYBOARD_NAME,
+                name=self.keyboard_name,
                 vendor=0x1209,
                 product=0xC101,
                 version=1,
@@ -79,6 +91,49 @@ class VirtualOutputs:
         except (OSError, ValueError):
             self.close()
             raise
+
+    def catalog(self) -> dict[str, list[dict[str, str]]]:
+        def entries(names: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
+            return [{"code": name, "name": name} for name in names]
+
+        keyboard_names = sorted(self._keyboard_codes())
+        return {
+            "gamepadButton": entries(
+                [name for name in self.GAMEPAD_BUTTON_NAMES if self._has_code(name)]
+            ),
+            "gamepadAxis": entries(
+                [name for name in self.GAMEPAD_AXIS_NAMES if self._has_code(name)]
+            ),
+            "key": entries(keyboard_names),
+            "mouseButton": entries(
+                [name for name in self.MOUSE_BUTTON_NAMES if self._has_code(name)]
+            ),
+            "mouseMove": entries(
+                [name for name in self.MOUSE_MOVE_NAMES if self._has_code(name)]
+            ),
+        }
+
+    def _has_code(self, name: str) -> bool:
+        return isinstance(getattr(self.evdev.ecodes, name, None), int)
+
+    def _named_codes(self, names: tuple[str, ...]) -> list[int]:
+        return [
+            int(getattr(self.evdev.ecodes, name))
+            for name in names
+            if self._has_code(name)
+        ]
+
+    def _keyboard_codes(self) -> dict[str, int]:
+        e = self.evdev.ecodes
+        key_max = getattr(e, "KEY_MAX", 0x2FF)
+        return {
+            name: int(value)
+            for name, value in vars(e).items()
+            if name.startswith("KEY_")
+            and name not in {"KEY_MAX", "KEY_CNT"}
+            and isinstance(value, int)
+            and 0 < value <= key_max
+        }
 
     def close(self) -> None:
         for device in (self.gamepad, self.keyboard):

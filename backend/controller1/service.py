@@ -36,8 +36,13 @@ class ControllerService:
         self.learn_thresholds: dict[str, int] = {}
         self.learn_started = 0.0
         self.last_raw_emit = 0.0
+        self.calibration_active = False
         self.calibrating: set[str] = set()
         self.calibration_samples: dict[str, dict[str, int]] = {}
+        self.calibration_values: dict[str, int] = {}
+        self.calibration_pressed_buttons: set[str] = set()
+        self.last_snapshot_emit = 0.0
+        self.calibration_snapshot_task: asyncio.Task[None] | None = None
         self.emit_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
@@ -54,7 +59,11 @@ class ControllerService:
             )
             self.logger.error(self.dependency_error)
             return
-        self.outputs = VirtualOutputs(self.evdev)
+        self.outputs = VirtualOutputs(
+            self.evdev,
+            self.store.state["outputGamepadName"],
+            self.store.state["outputKeyboardName"],
+        )
         self.engine = MappingEngine(self.outputs, self.logger)
         self.engine.set_profile(self.store.active_profile)
         self.devices = DeviceManager(
@@ -82,6 +91,10 @@ class ControllerService:
             await self.devices.stop()
         if self.outputs:
             self.outputs.close()
+        if self.calibration_snapshot_task:
+            self.calibration_snapshot_task.cancel()
+            await asyncio.gather(self.calibration_snapshot_task, return_exceptions=True)
+            self.calibration_snapshot_task = None
         for task in self.emit_tasks:
             task.cancel()
         await asyncio.gather(*self.emit_tasks, return_exceptions=True)
@@ -99,6 +112,9 @@ class ControllerService:
             "devices": devices,
             "dependencyError": self.dependency_error,
             "learning": self.learning,
+            "calibrating": self.calibration_active,
+            "outputGamepadName": self.store.state["outputGamepadName"],
+            "outputKeyboardName": self.store.state["outputKeyboardName"],
         }
 
     async def refresh_devices(self) -> list[dict[str, Any]]:
@@ -136,6 +152,56 @@ class ControllerService:
         self.store.save()
         await self.emit("status_changed", await self.get_status())
         return await self.get_status()
+
+    async def set_output_names(
+        self, gamepad_name: str, keyboard_name: str
+    ) -> dict[str, Any]:
+        gamepad_name = self._validate_output_name(gamepad_name, "gamepad")
+        keyboard_name = self._validate_output_name(keyboard_name, "keyboard")
+        old_gamepad_name = self.store.state["outputGamepadName"]
+        old_keyboard_name = self.store.state["outputKeyboardName"]
+        enabled = bool(self.store.state["enabled"])
+        active_device_id = self.store.active_profile.device_id
+
+        if enabled:
+            if not self.outputs or not self.devices:
+                raise RuntimeError("Controller1 virtual outputs are unavailable")
+            if self.engine:
+                self.engine.release_all()
+            await self.devices.select(None)
+            self.outputs.close()
+            self.outputs.gamepad_name = gamepad_name
+            self.outputs.keyboard_name = keyboard_name
+            try:
+                self.outputs.open()
+                await self.devices.select(active_device_id)
+            except (OSError, ValueError):
+                self.outputs.close()
+                self.outputs.gamepad_name = old_gamepad_name
+                self.outputs.keyboard_name = old_keyboard_name
+                try:
+                    self.outputs.open()
+                    await self.devices.select(active_device_id)
+                except (OSError, ValueError) as restore_error:
+                    self.logger.error(f"Could not restore virtual outputs: {restore_error}")
+                raise
+        elif self.outputs:
+            self.outputs.gamepad_name = gamepad_name
+            self.outputs.keyboard_name = keyboard_name
+
+        self.store.state["outputGamepadName"] = gamepad_name
+        self.store.state["outputKeyboardName"] = keyboard_name
+        self.store.save()
+        status = await self.get_status()
+        await self.emit("status_changed", status)
+        return status
+
+    async def get_output_catalog(self) -> dict[str, list[dict[str, str]]]:
+        if not self.outputs:
+            if self.dependency_error:
+                raise RuntimeError(self.dependency_error)
+            raise RuntimeError("Controller1 virtual outputs are unavailable")
+        return self.outputs.catalog()
 
     async def set_profile(self, profile_id: str) -> dict[str, Any]:
         profile = self.store.set_active(profile_id)
@@ -196,16 +262,52 @@ class ControllerService:
         await self.emit("learning_changed", False)
 
     async def begin_calibration(self, inputs: list[dict[str, Any]]) -> None:
+        if not self.devices or not self.devices.active_device or not self.evdev:
+            raise RuntimeError("enable and select a controller before calibrating")
+        await self._cancel_calibration_snapshot()
+        self.calibration_active = True
         self.calibrating = {InputRef.from_dict(item).key for item in inputs}
         self.calibration_samples = {}
+        self.calibration_values = {}
+        self.calibration_pressed_buttons = set()
+        device = self.devices.active_device
+        e = self.evdev.ecodes
+        capabilities = device.capabilities(absinfo=False)
+        for code in capabilities.get(e.EV_ABS, []):
+            info = device.absinfo(code)
+            key = f"{e.EV_ABS}:{code}"
+            value = int(info.value)
+            self.calibration_values[key] = value
+            self.calibration_samples[key] = {"min": value, "max": value}
+        for code in capabilities.get(e.EV_KEY, []):
+            self.calibration_values[f"{e.EV_KEY}:{code}"] = 0
+        for code in device.active_keys():
+            key = f"{e.EV_KEY}:{code}"
+            self.calibration_values[key] = 1
+            self.calibration_pressed_buttons.add(key)
+        self.last_snapshot_emit = time.monotonic()
+        await self.emit("input_snapshot", self._calibration_snapshot())
+        await self.emit("status_changed", await self.get_status())
 
     async def finish_calibration(
         self, profile_id: str, centers: dict[str, int] | None = None
     ) -> dict[str, Any]:
         profile = self._profile(profile_id)
         centers = centers or {}
+        await self._cancel_calibration_snapshot()
+        if self.calibration_active:
+            await self.emit("input_snapshot", self._calibration_snapshot())
         for key, sample in self.calibration_samples.items():
-            center = int(centers.get(key, self.engine.raw_state.get(key, 0) if self.engine else 0))
+            if key not in self.calibrating:
+                continue
+            center = int(
+                centers.get(
+                    key,
+                    self.calibration_values.get(
+                        key, self.engine.raw_state.get(key, 0) if self.engine else 0
+                    ),
+                )
+            )
             if sample["max"] <= sample["min"]:
                 continue
             previous = profile.calibrations.get(key, AxisCalibration())
@@ -217,9 +319,13 @@ class ControllerService:
                 invert=previous.invert,
                 expo=previous.expo,
             )
+        self.calibration_active = False
         self.calibrating.clear()
         self.calibration_samples.clear()
+        self.calibration_values.clear()
+        self.calibration_pressed_buttons.clear()
         self._save_and_reload(profile)
+        await self.emit("status_changed", await self.get_status())
         return profile.to_dict()
 
     async def set_calibration(
@@ -250,12 +356,19 @@ class ControllerService:
         if self.engine:
             self.engine.process(int(event.type), int(event.code), int(event.value))
         key = f"{event.type}:{event.code}"
-        if key in self.calibrating:
-            sample = self.calibration_samples.setdefault(
-                key, {"min": int(event.value), "max": int(event.value)}
-            )
-            sample["min"] = min(sample["min"], int(event.value))
-            sample["max"] = max(sample["max"], int(event.value))
+        if self.calibration_active:
+            value = int(event.value)
+            self.calibration_values[key] = value
+            e = self.evdev.ecodes
+            if event.type == e.EV_KEY and value:
+                self.calibration_pressed_buttons.add(key)
+            if event.type == e.EV_ABS:
+                sample = self.calibration_samples.setdefault(
+                    key, {"min": value, "max": value}
+                )
+                sample["min"] = min(sample["min"], value)
+                sample["max"] = max(sample["max"], value)
+            self._queue_calibration_snapshot()
         if self.learning:
             self._observe_learning(event)
         now = time.monotonic()
@@ -270,6 +383,45 @@ class ControllerService:
                     "name": self._event_name(int(event.type), int(event.code)),
                 },
             )
+
+    def _calibration_snapshot(self) -> dict[str, Any]:
+        return {
+            "values": dict(self.calibration_values),
+            "axisRanges": {
+                key: {"min": sample["min"], "max": sample["max"]}
+                for key, sample in self.calibration_samples.items()
+            },
+            "pressedButtons": sorted(self.calibration_pressed_buttons),
+        }
+
+    def _queue_calibration_snapshot(self) -> None:
+        if not self.calibration_active:
+            return
+        delay = max(0.0, (1 / 30) - (time.monotonic() - self.last_snapshot_emit))
+        if delay == 0:
+            self.last_snapshot_emit = time.monotonic()
+            self._schedule_emit("input_snapshot", self._calibration_snapshot())
+        elif not self.calibration_snapshot_task:
+            self.calibration_snapshot_task = asyncio.get_running_loop().create_task(
+                self._emit_calibration_snapshot_after(delay),
+                name="controller1-calibration-snapshot",
+            )
+
+    async def _emit_calibration_snapshot_after(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            if self.calibration_active:
+                self.last_snapshot_emit = time.monotonic()
+                await self.emit("input_snapshot", self._calibration_snapshot())
+        finally:
+            self.calibration_snapshot_task = None
+
+    async def _cancel_calibration_snapshot(self) -> None:
+        if not self.calibration_snapshot_task:
+            return
+        self.calibration_snapshot_task.cancel()
+        await asyncio.gather(self.calibration_snapshot_task, return_exceptions=True)
+        self.calibration_snapshot_task = None
 
     def _observe_learning(self, event: Any) -> None:
         key = f"{event.type}:{event.code}"
@@ -331,6 +483,16 @@ class ControllerService:
         self.store.replace_profile(profile)
         if self.engine and profile.id == self.store.state["activeProfileId"]:
             self.engine.set_profile(profile)
+
+    def _validate_output_name(self, value: str, label: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{label} output name must be a string")
+        name = value.strip()
+        if not name:
+            raise ValueError(f"{label} output name cannot be empty")
+        if len(name) > 80:
+            raise ValueError(f"{label} output name cannot exceed 80 characters")
+        return name
 
     def _ensure_uinput(self) -> None:
         if Path("/dev/uinput").exists() or os.name != "posix":

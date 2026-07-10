@@ -5,6 +5,10 @@ from typing import Any
 from uuid import uuid4
 
 
+DEFAULT_OUTPUT_GAMEPAD_NAME = "Controller1 Virtual Gamepad"
+DEFAULT_OUTPUT_KEYBOARD_NAME = "Controller1 Virtual Keyboard and Mouse"
+
+
 @dataclass(frozen=True)
 class InputRef:
     event_type: int
@@ -188,6 +192,8 @@ def default_state() -> dict[str, Any]:
     return {
         "version": 1,
         "enabled": False,
+        "outputGamepadName": DEFAULT_OUTPUT_GAMEPAD_NAME,
+        "outputKeyboardName": DEFAULT_OUTPUT_KEYBOARD_NAME,
         "activeProfileId": profile.id,
         "profiles": [profile.to_dict()],
     }

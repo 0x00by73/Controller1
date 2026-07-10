@@ -29,7 +29,20 @@ class FakeInputDevice:
         if absinfo:
             return {
                 e.EV_KEY: [304, 305],
-                e.EV_ABS: [(0, FakeAbsInfo(min=0, max=255)), (1, FakeAbsInfo(min=0, max=255))],
+                e.EV_ABS: [
+                    (
+                        0,
+                        FakeAbsInfo(
+                            value=127,
+                            min=0,
+                            max=255,
+                            flat=4,
+                            fuzz=2,
+                            resolution=8,
+                        ),
+                    ),
+                    (1, FakeAbsInfo(min=0, max=255)),
+                ],
             }
         return {
             e.EV_KEY: [304, 305],
@@ -84,6 +97,13 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["name"], "Example Gamepad")
         self.assertEqual(found[0]["axes"][0]["name"], "ABS_X")
+        self.assertEqual(found[0]["axes"][0]["min"], 0)
+        self.assertEqual(found[0]["axes"][0]["max"], 255)
+        self.assertEqual(found[0]["axes"][0]["flat"], 4)
+        self.assertEqual(found[0]["axes"][0]["fuzz"], 2)
+        self.assertEqual(found[0]["axes"][0]["resolution"], 8)
+        self.assertEqual(found[0]["axes"][0]["value"], 127)
+        self.assertEqual(found[0]["axes"][0]["initialValue"], 127)
 
     def test_parse_capability_bitmap(self):
         manager = DeviceManager(FakeEvdev, lambda _event: None, lambda _devices: None, lambda: None)

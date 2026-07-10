@@ -50,6 +50,14 @@ class Plugin:
     ) -> dict[str, Any]:
         return await self._require_service().set_enabled(enabled, device_id)
 
+    async def set_output_names(
+        self, gamepad_name: str, keyboard_name: str
+    ) -> dict[str, Any]:
+        return await self._require_service().set_output_names(gamepad_name, keyboard_name)
+
+    async def get_output_catalog(self) -> dict[str, list[dict[str, str]]]:
+        return await self._require_service().get_output_catalog()
+
     async def set_profile(self, profile_id: str) -> dict[str, Any]:
         return await self._require_service().set_profile(profile_id)
 

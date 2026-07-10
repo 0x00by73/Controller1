@@ -6,7 +6,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .models import Profile, default_state
+from .models import (
+    DEFAULT_OUTPUT_GAMEPAD_NAME,
+    DEFAULT_OUTPUT_KEYBOARD_NAME,
+    Profile,
+    default_state,
+)
 
 
 class ProfileStore:
@@ -42,6 +47,12 @@ class ProfileStore:
             self.state = {
                 "version": 1,
                 "enabled": bool(loaded.get("enabled", False)),
+                "outputGamepadName": str(
+                    loaded.get("outputGamepadName", DEFAULT_OUTPUT_GAMEPAD_NAME)
+                ),
+                "outputKeyboardName": str(
+                    loaded.get("outputKeyboardName", DEFAULT_OUTPUT_KEYBOARD_NAME)
+                ),
                 "activeProfileId": str(loaded.get("activeProfileId", profiles[0]["id"])),
                 "profiles": profiles,
             }
