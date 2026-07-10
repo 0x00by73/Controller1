@@ -35,12 +35,13 @@ Input for that controller/game if duplicate input occurs.
 Linux event code names come from `linux/input-event-codes.h` (`KEY_*`, `BTN_*`,
 `ABS_*`, and `REL_*`).
 
-## Calibration
+## Controls
 
-Calibration belongs to the active profile. Start calibration, move every axis
-through its full travel, return controls to center, then save. Controller1
-normalizes raw input before evaluating ranges or emitting virtual axes. The
-schema also supports per-axis deadzone, inversion, and expo.
+Calibration progress belongs to the active profile and physical controller,
+survives reconnects, and resets only when **Start calibration** is selected.
+Move every axis through its full travel, return controls to center, then save.
+Select any axis or button in **Controls** to configure its mappings. Controller1
+normalizes raw input before evaluating ranges or emitting virtual axes.
 
 ## Build
 

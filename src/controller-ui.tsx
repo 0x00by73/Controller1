@@ -3,22 +3,23 @@ import {
   DialogButton,
   DropdownItem,
   Focusable,
+  ModalRoot,
   Navigation,
   SidebarNavigation,
   SliderField,
   TextField,
+  showModal,
 } from "@decky/ui";
 import {
   addEventListener,
   removeEventListener,
   toaster,
 } from "@decky/api";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   FaBolt,
   FaCheck,
   FaGamepad,
-  FaKeyboard,
   FaLink,
   FaSlidersH,
   FaTrash,
@@ -31,6 +32,7 @@ import {
   InputSnapshot,
   OutputCatalog,
   OutputOption,
+  Profile,
   Status,
   beginCalibration,
   createProfile,
@@ -69,7 +71,6 @@ const ACTION_LABELS: Record<Action["type"], string> = {
 
 const eventKey = (input: InputRef) => `${input.eventType}:${input.code}`;
 const inputType = (input: InputRef) => input.eventType === 3 ? "Axis" : "Button";
-const inputLabel = (input: InputRef) => `${input.name} · ${inputType(input)} ${input.code}`;
 
 function notifyError(error: unknown) {
   toaster.toast({ title: "Controller1", body: String(error), critical: true });
@@ -78,8 +79,24 @@ function notifyError(error: unknown) {
 function useController() {
   const [status, setStatus] = useState<Status>();
   const [catalog, setCatalog] = useState<OutputCatalog>();
-  const [snapshot, setSnapshot] = useState<InputSnapshot>(EMPTY_SNAPSHOT);
+  const [snapshot, setSnapshotState] = useState<InputSnapshot>(EMPTY_SNAPSHOT);
   const [learned, setLearned] = useState<InputRef[]>([]);
+  const latestSnapshot = useRef(EMPTY_SNAPSHOT);
+  const snapshotFrame = useRef<number | null>(null);
+
+  const queueSnapshot = useCallback((next: InputSnapshot) => {
+    latestSnapshot.current = next;
+    if (snapshotFrame.current !== null) return;
+    snapshotFrame.current = window.requestAnimationFrame(() => {
+      snapshotFrame.current = null;
+      setSnapshotState(latestSnapshot.current);
+    });
+  }, []);
+
+  const setSnapshot = useCallback((next: InputSnapshot) => {
+    latestSnapshot.current = next;
+    setSnapshotState(next);
+  }, []);
 
   const reload = useCallback(async () => {
     const next = await getStatus();
@@ -94,13 +111,13 @@ function useController() {
     const devicesListener = addEventListener<[Device[]]>("devices_changed", (devices) => {
       setStatus((current) => current ? { ...current, devices } : current);
     });
-    const snapshotListener = addEventListener<[InputSnapshot]>("input_snapshot", setSnapshot);
+    const snapshotListener = addEventListener<[InputSnapshot]>("input_snapshot", queueSnapshot);
     const rawListener = addEventListener<[RawInput]>("raw_input", (input) => {
       const key = eventKey(input);
-      setSnapshot((current) => ({
-        ...current,
-        values: { ...current.values, [key]: input.value },
-      }));
+      queueSnapshot({
+        ...latestSnapshot.current,
+        values: { ...latestSnapshot.current.values, [key]: input.value },
+      });
     });
     const learnedListener = addEventListener<[RawInput]>("learned_input", (input) => {
       setLearned((current) => current.some((item) => eventKey(item) === eventKey(input))
@@ -119,8 +136,12 @@ function useController() {
       removeEventListener("raw_input", rawListener);
       removeEventListener("learned_input", learnedListener);
       removeEventListener("learning_changed", learningListener);
+      if (snapshotFrame.current !== null) {
+        window.cancelAnimationFrame(snapshotFrame.current);
+        snapshotFrame.current = null;
+      }
     };
-  }, [reload]);
+  }, [queueSnapshot, reload]);
 
   return {
     status,
@@ -262,7 +283,7 @@ function SetupPage({
 
       <PageHeader
         title="Profile"
-        description="Calibration and mappings are isolated per profile."
+        description="Controls and mappings are isolated per profile."
       />
       <DropdownItem
         label="Active profile"
@@ -294,34 +315,45 @@ function SetupPage({
   );
 }
 
-function AxisCard({
+const AxisCard = memo(function AxisCard({
   axis,
-  snapshot,
+  current,
+  observedMin,
+  observedMax,
   stored,
+  onSelect,
 }: {
   axis: Device["axes"][number];
-  snapshot: InputSnapshot;
+  current: number;
+  observedMin?: number;
+  observedMax?: number;
   stored?: { min: number; center: number; max: number };
+  onSelect: (input: InputRef) => void;
 }) {
-  const key = `3:${axis.code}`;
-  const observed = snapshot.axisRanges[key];
-  const minimum = axis.min ?? stored?.min ?? observed?.min ?? -32768;
-  const maximum = axis.max ?? stored?.max ?? observed?.max ?? 32767;
-  const current = snapshot.values[key] ?? axis.value ?? stored?.center ?? 0;
+  const input = { eventType: 3, code: axis.code, name: axis.name };
+  const minimum = axis.min ?? stored?.min ?? observedMin ?? -32768;
+  const maximum = axis.max ?? stored?.max ?? observedMax ?? 32767;
   const span = Math.max(1, maximum - minimum);
   const position = Math.max(0, Math.min(100, ((current - minimum) / span) * 100));
-  const observedStart = observed
-    ? Math.max(0, Math.min(100, ((observed.min - minimum) / span) * 100))
+  const hasObservedRange = observedMin !== undefined && observedMax !== undefined;
+  const observedStart = hasObservedRange
+    ? Math.max(0, Math.min(100, ((observedMin - minimum) / span) * 100))
     : position;
-  const observedEnd = observed
-    ? Math.max(0, Math.min(100, ((observed.max - minimum) / span) * 100))
+  const observedEnd = hasObservedRange
+    ? Math.max(0, Math.min(100, ((observedMax - minimum) / span) * 100))
     : position;
-  const coverage = observed
-    ? Math.max(0, Math.min(1, (observed.max - observed.min) / span))
+  const coverage = hasObservedRange
+    ? Math.max(0, Math.min(1, (observedMax - observedMin) / span))
     : 0;
 
   return (
-    <div className={`Controller1_Card ${coverage >= 0.8 ? "Controller1_Card--active" : ""}`}>
+    <Focusable
+      className={`Controller1_Card Controller1_Control ${coverage >= 0.8 ? "Controller1_Card--active" : ""}`}
+      focusClassName="Controller1_Control--focused"
+      onActivate={() => onSelect(input)}
+      onClick={() => onSelect(input)}
+      onOKActionDescription="Configure mapping"
+    >
       <div className="Controller1_CardTitle">
         <span>{axis.name}</span>
         <span className={`Controller1_Badge ${coverage >= 0.8 ? "Controller1_Badge--good" : ""}`}>
@@ -338,22 +370,55 @@ function AxisCard({
         <div className="Controller1_AxisValue" style={{ left: `${position}%` }} />
       </div>
       <div className="Controller1_AxisLabels">
-        <span>{observed?.min ?? "—"} / {minimum}</span>
+        <span>{observedMin ?? "—"} / {minimum}</span>
         <span>{stored ? `center ${stored.center}` : "center"}</span>
-        <span>{observed?.max ?? "—"} / {maximum}</span>
+        <span>{observedMax ?? "—"} / {maximum}</span>
       </div>
-    </div>
+    </Focusable>
   );
-}
+});
+
+const ButtonControl = memo(function ButtonControl({
+  button,
+  pressed,
+  seen,
+  onSelect,
+}: {
+  button: Device["buttons"][number];
+  pressed: boolean;
+  seen: boolean;
+  onSelect: (input: InputRef) => void;
+}) {
+  const input = { eventType: 1, code: button.code, name: button.name };
+  return (
+    <Focusable
+      className={[
+        "Controller1_ButtonChip",
+        "Controller1_Control",
+        pressed ? "Controller1_ButtonChip--pressed" : "",
+        seen ? "Controller1_ButtonChip--seen" : "",
+      ].join(" ")}
+      focusClassName="Controller1_Control--focused"
+      onActivate={() => onSelect(input)}
+      onClick={() => onSelect(input)}
+      onOKActionDescription="Configure mapping"
+    >
+      <div className="Controller1_ButtonName">{button.name}</div>
+      <div className="Controller1_Meta">EV_KEY · {button.code}</div>
+    </Focusable>
+  );
+});
 
 function CalibrationPage({
   status,
+  catalog,
   snapshot,
   setSnapshot,
   setStatus,
   reload,
 }: {
   status: Status;
+  catalog: OutputCatalog | undefined;
   snapshot: InputSnapshot;
   setSnapshot: (snapshot: InputSnapshot) => void;
   setStatus: (status: Status) => void;
@@ -362,16 +427,25 @@ function CalibrationPage({
   const profile = status.profiles.find((item) => item.id === status.activeProfileId);
   const device = status.devices.find((item) => item.id === profile?.deviceId && item.active)
     ?? status.devices.find((item) => item.active);
-  const seenButtons = new Set(snapshot.pressedButtons);
+  const persistedRun = device ? profile?.calibrationRuns[device.id] : undefined;
+  const axisRanges = {
+    ...(persistedRun?.axisRanges ?? {}),
+    ...snapshot.axisRanges,
+  };
+  const seenButtons = new Set([
+    ...(persistedRun?.pressedButtons ?? []),
+    ...snapshot.pressedButtons,
+  ]);
   const axisComplete = device?.axes.filter((axis) => {
-    const observed = snapshot.axisRanges[`3:${axis.code}`];
+    const observed = axisRanges[`3:${axis.code}`];
     const span = (axis.max ?? 0) - (axis.min ?? 0);
     return observed && (span > 0
       ? (observed.max - observed.min) / span >= 0.8
       : observed.max > observed.min);
   }).length ?? 0;
   const total = (device?.axes.length ?? 0) + (device?.buttons.length ?? 0);
-  const complete = axisComplete + seenButtons.size;
+  const buttonComplete = device?.buttons.filter((button) => seenButtons.has(`1:${button.code}`)).length ?? 0;
+  const complete = axisComplete + buttonComplete;
   const progress = total ? Math.min(100, Math.round((complete / total) * 100)) : 0;
 
   const start = async () => {
@@ -399,12 +473,17 @@ function CalibrationPage({
     }
   };
 
+  const selectControl = useCallback((input: InputRef) => {
+    if (!profile) return;
+    showControlMappingModal(input, profile, catalog, reload);
+  }, [catalog, profile, reload]);
+
   if (!status.enabled || !device || !profile) {
     return (
       <div className="Controller1_Content">
         <PageHeader
-          title="Calibration"
-          description="Connect a physical controller before calibrating it."
+          title="Controls"
+          description="Connect a physical controller to inspect and configure its controls."
         />
         <div className="Controller1_Empty">Open Setup and connect a controller.</div>
       </div>
@@ -414,10 +493,10 @@ function CalibrationPage({
   return (
     <Focusable className="Controller1_Content" flow-children="column">
       <PageHeader
-        title="Calibration"
+        title="Controls"
         description={status.calibrating
           ? "Move every axis through its full travel and press every available button."
-          : "Inspect every input, then capture ranges and centers for this profile."}
+          : "Inspect live input or select a control to configure its mapping."}
         badge={(
           <span className={`Controller1_Badge ${status.calibrating ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
             {status.calibrating ? <><FaBolt /> Recording</> : <><FaCheck /> Ready</>}
@@ -444,8 +523,11 @@ function CalibrationPage({
           <AxisCard
             key={axis.code}
             axis={axis}
-            snapshot={snapshot}
+            current={snapshot.values[`3:${axis.code}`] ?? axis.value ?? profile.calibrations[`3:${axis.code}`]?.center ?? 0}
+            observedMin={axisRanges[`3:${axis.code}`]?.min}
+            observedMax={axisRanges[`3:${axis.code}`]?.max}
             stored={profile.calibrations[`3:${axis.code}`]}
+            onSelect={selectControl}
           />
         ))}
       </div>
@@ -455,24 +537,15 @@ function CalibrationPage({
         description="Blue means pressed now. Green outline means seen during this calibration."
       />
       <div className="Controller1_ButtonGrid">
-        {device.buttons.map((button) => {
-          const key = `1:${button.code}`;
-          const pressed = Boolean(snapshot.values[key]);
-          const seen = seenButtons.has(key);
-          return (
-            <div
-              key={button.code}
-              className={[
-                "Controller1_ButtonChip",
-                pressed ? "Controller1_ButtonChip--pressed" : "",
-                seen ? "Controller1_ButtonChip--seen" : "",
-              ].join(" ")}
-            >
-              <div className="Controller1_ButtonName">{button.name}</div>
-              <div className="Controller1_Meta">EV_KEY · {button.code}</div>
-            </div>
-          );
-        })}
+        {device.buttons.map((button) => (
+          <ButtonControl
+            key={button.code}
+            button={button}
+            pressed={Boolean(snapshot.values[`1:${button.code}`])}
+            seen={seenButtons.has(`1:${button.code}`)}
+            onSelect={selectControl}
+          />
+        ))}
       </div>
 
       <div className="Controller1_Actions">
@@ -489,34 +562,23 @@ function outputOptions(catalog: OutputCatalog | undefined, type: Action["type"])
 }
 
 function MappingBuilder({
-  status,
+  profileId,
+  source,
   catalog,
   onSaved,
 }: {
-  status: Status;
+  profileId: string;
+  source: InputRef;
   catalog: OutputCatalog | undefined;
-  onSaved: () => Promise<unknown>;
+  onSaved: (binding: Binding) => void;
 }) {
-  const profile = status.profiles.find((item) => item.id === status.activeProfileId);
-  const device = status.devices.find((item) => item.id === profile?.deviceId)
-    ?? status.devices.find((item) => item.active);
-  const inputs = useMemo(() => [
-    ...(device?.axes.map((axis) => ({ eventType: 3, code: axis.code, name: axis.name })) ?? []),
-    ...(device?.buttons.map((button) => ({ eventType: 1, code: button.code, name: button.name })) ?? []),
-  ], [device]);
-  const [sourceKey, setSourceKey] = useState("");
   const [actionType, setActionType] = useState<Action["type"]>("gamepadButton");
   const [outputCode, setOutputCode] = useState("BTN_SOUTH");
   const [name, setName] = useState("");
   const [low, setLow] = useState(-1);
   const [high, setHigh] = useState(1);
-  const source = inputs.find((input) => eventKey(input) === sourceKey);
   const outputs = outputOptions(catalog, actionType);
   const customOutput = actionType === "keyCombo" || actionType === "layer";
-
-  useEffect(() => {
-    if (!sourceKey && inputs[0]) setSourceKey(eventKey(inputs[0]));
-  }, [inputs, sourceKey]);
 
   useEffect(() => {
     if (!customOutput && outputs[0] && !outputs.some((item) => item.code === outputCode)) {
@@ -525,7 +587,7 @@ function MappingBuilder({
   }, [customOutput, outputCode, outputs]);
 
   const submit = async () => {
-    if (!profile || !source || !outputCode.trim()) return;
+    if (!outputCode.trim()) return;
     const continuous = actionType === "gamepadAxis" || actionType === "mouseMove";
     const action: Action = {
       type: actionType,
@@ -546,9 +608,9 @@ function MappingBuilder({
       action,
     };
     try {
-      await saveBinding(profile.id, binding);
+      const saved = await saveBinding(profileId, binding);
       setName("");
-      await onSaved();
+      onSaved(saved);
     } catch (error) {
       notifyError(error);
     }
@@ -556,12 +618,6 @@ function MappingBuilder({
 
   return (
     <div className="Controller1_Card Controller1_Stack">
-      <DropdownItem
-        label="Physical input"
-        rgOptions={inputs.map((input) => ({ data: eventKey(input), label: inputLabel(input) }))}
-        selectedOption={sourceKey}
-        onChange={(option) => setSourceKey(String(option.data))}
-      />
       <DropdownItem
         label="Output type"
         rgOptions={(Object.keys(ACTION_LABELS) as Action["type"][])
@@ -600,7 +656,7 @@ function MappingBuilder({
         onChange={(event) => setName(event.currentTarget.value)}
       />
       <div className="Controller1_Actions">
-        <DialogButton disabled={!source || !outputCode.trim()} onClick={submit}>
+        <DialogButton disabled={!outputCode.trim()} onClick={submit}>
           Save mapping
         </DialogButton>
       </div>
@@ -645,29 +701,108 @@ function BindingList({
   );
 }
 
-function MappingsPage({
-  status,
+function ControlMappingModal({
+  input,
+  profile,
   catalog,
-  reload,
+  closeModal,
+  onChanged,
 }: {
-  status: Status;
+  input: InputRef;
+  profile: Profile;
   catalog: OutputCatalog | undefined;
-  reload: () => Promise<unknown>;
+  closeModal: () => void;
+  onChanged: () => Promise<unknown>;
 }) {
-  const profile = status.profiles.find((item) => item.id === status.activeProfileId);
-  if (!profile) return null;
-  const mappings = profile.bindings.filter((binding) => binding.conditions.length <= 1);
+  const matchesInput = (binding: Binding) => {
+    const source = binding.conditions[0]?.input ?? binding.action.source;
+    return source ? eventKey(source) === eventKey(input) : false;
+  };
+  const [mappings, setMappings] = useState(profile.bindings.filter(matchesInput));
+
+  const saved = (binding: Binding) => {
+    setMappings((current) => [
+      ...current.filter((item) => item.id !== binding.id),
+      binding,
+    ]);
+    void onChanged();
+  };
+
+  const remove = async (bindingId: string) => {
+    try {
+      const updated = await deleteBinding(profile.id, bindingId);
+      setMappings(updated.bindings.filter(matchesInput));
+      await onChanged();
+    } catch (error) {
+      notifyError(error);
+    }
+  };
+
   return (
-    <Focusable className="Controller1_Content" flow-children="column">
-      <PageHeader
-        title="Mappings"
-        description="Route one physical control to a typed virtual output. No Linux code memorization required."
-        badge={<span className="Controller1_Badge">{mappings.length} mappings</span>}
-      />
-      <MappingBuilder status={status} catalog={catalog} onSaved={reload} />
-      <PageHeader title="Assigned outputs" description="Mappings in the active profile." />
-      <BindingList profileId={profile.id} bindings={mappings} onChanged={reload} />
-    </Focusable>
+    <ModalRoot closeModal={closeModal} onCancel={closeModal} bAllowFullSize>
+      <Focusable className="Controller1 Controller1_Modal" flow-children="column">
+        <PageHeader
+          title={input.name}
+          description={`${inputType(input)} ${input.code} · route this physical control to a virtual output.`}
+          badge={<span className="Controller1_Badge">{mappings.length} mappings</span>}
+        />
+        <MappingBuilder
+          profileId={profile.id}
+          source={input}
+          catalog={catalog}
+          onSaved={saved}
+        />
+        <PageHeader title="Assigned outputs" description="Mappings in the active profile." />
+        {mappings.length === 0 ? (
+          <div className="Controller1_Empty">Nothing configured yet.</div>
+        ) : (
+          <div className="Controller1_Stack">
+            {mappings.map((binding) => (
+              <div className="Controller1_MappingRow" key={binding.id}>
+                <div>
+                  <strong>{binding.name}</strong>
+                  <div className="Controller1_MappingRoute">
+                    <span>{ACTION_LABELS[binding.action.type]}</span>
+                    <span>→</span>
+                    <span>{binding.action.code || binding.action.codes?.join("+")}</span>
+                  </div>
+                </div>
+                <DialogButton
+                  disabled={!binding.id}
+                  onClick={() => binding.id && remove(binding.id)}
+                >
+                  <FaTrash />
+                </DialogButton>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="Controller1_Actions">
+          <DialogButton onClick={closeModal}>Done</DialogButton>
+        </div>
+      </Focusable>
+    </ModalRoot>
+  );
+}
+
+function showControlMappingModal(
+  input: InputRef,
+  profile: Profile,
+  catalog: OutputCatalog | undefined,
+  onChanged: () => Promise<unknown>,
+) {
+  let modal: ReturnType<typeof showModal>;
+  const closeModal = () => modal.Close();
+  modal = showModal(
+    <ControlMappingModal
+      input={input}
+      profile={profile}
+      catalog={catalog}
+      closeModal={closeModal}
+      onChanged={onChanged}
+    />,
+    window,
+    { strTitle: `Map ${input.name}` },
   );
 }
 
@@ -881,29 +1016,17 @@ export function ControllerApp() {
             ),
           },
           {
-            title: "Calibration",
-            identifier: "calibration",
+            title: "Controls",
+            identifier: "controls",
             icon: <FaSlidersH />,
             padding: "none",
             content: (
               <CalibrationPage
                 status={status}
+                catalog={controller.catalog}
                 snapshot={controller.snapshot}
                 setSnapshot={controller.setSnapshot}
                 setStatus={controller.setStatus}
-                reload={controller.reload}
-              />
-            ),
-          },
-          {
-            title: "Mappings",
-            identifier: "mappings",
-            icon: <FaKeyboard />,
-            padding: "none",
-            content: (
-              <MappingsPage
-                status={status}
-                catalog={controller.catalog}
                 reload={controller.reload}
               />
             ),

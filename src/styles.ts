@@ -71,6 +71,16 @@ export const controllerStyles = `
   box-shadow: inset 0 0 0 1px rgba(26, 159, 255, 0.2);
 }
 
+.Controller1_Control {
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
+}
+
+.Controller1_Control--focused {
+  border-color: var(--c1-accent) !important;
+  box-shadow: 0 0 0 2px var(--c1-accent), 0 0 14px rgba(26, 159, 255, 0.35) !important;
+}
+
 .Controller1_CardTitle {
   display: flex;
   align-items: center;
@@ -163,6 +173,8 @@ export const controllerStyles = `
   background: white;
   transform: translateX(-2px);
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+  transition: left 34ms linear;
+  will-change: left;
 }
 
 .Controller1_AxisLabels {
@@ -224,6 +236,16 @@ export const controllerStyles = `
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.Controller1_Modal {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(720px, 80vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 20px;
 }
 
 .Controller1_Stack {

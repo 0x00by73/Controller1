@@ -75,6 +75,36 @@ class AxisCalibration:
 
 
 @dataclass
+class CalibrationRun:
+    axis_ranges: dict[str, dict[str, int]] = field(default_factory=dict)
+    pressed_buttons: set[str] = field(default_factory=set)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CalibrationRun":
+        return cls(
+            axis_ranges={
+                str(key): {
+                    "min": int(item.get("min", 0)),
+                    "max": int(item.get("max", 0)),
+                }
+                for key, item in value.get("axisRanges", {}).items()
+            },
+            pressed_buttons={
+                str(item) for item in value.get("pressedButtons", [])
+            },
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "axisRanges": {
+                key: {"min": item["min"], "max": item["max"]}
+                for key, item in self.axis_ranges.items()
+            },
+            "pressedButtons": sorted(self.pressed_buttons),
+        }
+
+
+@dataclass
 class Predicate:
     input: InputRef
     test: str = "pressed"
@@ -163,6 +193,7 @@ class Profile:
     device_id: str | None = None
     bindings: list[Binding] = field(default_factory=list)
     calibrations: dict[str, AxisCalibration] = field(default_factory=dict)
+    calibration_runs: dict[str, CalibrationRun] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Profile":
@@ -175,6 +206,10 @@ class Profile:
                 key: AxisCalibration.from_dict(item)
                 for key, item in value.get("calibrations", {}).items()
             },
+            calibration_runs={
+                key: CalibrationRun.from_dict(item)
+                for key, item in value.get("calibrationRuns", {}).items()
+            },
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -184,6 +219,9 @@ class Profile:
             "deviceId": self.device_id,
             "bindings": [item.to_dict() for item in self.bindings],
             "calibrations": {key: item.to_dict() for key, item in self.calibrations.items()},
+            "calibrationRuns": {
+                key: item.to_dict() for key, item in self.calibration_runs.items()
+            },
         }
 
 

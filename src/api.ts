@@ -37,12 +37,18 @@ export type Calibration = {
   expo: number;
 };
 
+export type CalibrationRun = {
+  axisRanges: Record<string, { min: number; max: number }>;
+  pressedButtons: string[];
+};
+
 export type Profile = {
   id: string;
   name: string;
   deviceId: string | null;
   bindings: Binding[];
   calibrations: Record<string, Calibration>;
+  calibrationRuns: Record<string, CalibrationRun>;
 };
 
 export type Device = {

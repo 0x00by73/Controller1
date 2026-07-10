@@ -140,6 +140,9 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.service.devices = FakeDevices(device)
         self.service.engine = FakeEngine()
+        profile = self.service.store.active_profile
+        profile.device_id = "device"
+        self.service.store.replace_profile(profile)
 
         await self.service.begin_calibration(
             [{"eventType": 3, "code": 0, "name": "ABS_X"}]
@@ -149,6 +152,10 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.service._on_input(SimpleNamespace(type=3, code=0, value=-50))
         self.service._on_input(SimpleNamespace(type=1, code=304, value=1))
         self.service._on_input(SimpleNamespace(type=3, code=0, value=75))
+        await asyncio.sleep(0.51)
+        saved_run = self.service.store.active_profile.calibration_runs["device"]
+        self.assertEqual(saved_run.axis_ranges["3:0"], {"min": -50, "max": 75})
+        self.assertEqual(saved_run.pressed_buttons, {"1:304", "1:305"})
         profile = await self.service.finish_calibration(
             self.service.store.active_profile.id,
             {"3:0": 5},
@@ -167,6 +174,14 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["calibrations"]["3:0"]["min"], -50)
         self.assertEqual(profile["calibrations"]["3:0"]["center"], 5)
         self.assertEqual(profile["calibrations"]["3:0"]["max"], 75)
+        self.assertEqual(
+            profile["calibrationRuns"]["device"]["axisRanges"]["3:0"],
+            {"min": -50, "max": 75},
+        )
+        self.assertEqual(
+            profile["calibrationRuns"]["device"]["pressedButtons"],
+            ["1:304", "1:305"],
+        )
         self.assertFalse((await self.service.get_status())["calibrating"])
 
 

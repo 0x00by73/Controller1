@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 
-from controller1.models import Action, Binding, Predicate, InputRef
+from controller1.models import Action, Binding, CalibrationRun, Predicate, InputRef
 from controller1.models import DEFAULT_OUTPUT_GAMEPAD_NAME, DEFAULT_OUTPUT_KEYBOARD_NAME
 from controller1.store import ProfileStore
 
@@ -74,6 +74,24 @@ class ProfileStoreTests(unittest.TestCase):
 
             self.assertEqual(reloaded.state["outputGamepadName"], "Custom Pad")
             self.assertEqual(reloaded.state["outputKeyboardName"], "Custom Keys")
+
+    def test_calibration_progress_round_trips_per_controller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            store.load()
+            profile = store.active_profile
+            profile.calibration_runs["controller-a"] = CalibrationRun(
+                axis_ranges={"3:0": {"min": -100, "max": 100}},
+                pressed_buttons={"1:304"},
+            )
+            store.replace_profile(profile)
+
+            reloaded = ProfileStore(directory)
+            reloaded.load()
+            run = reloaded.active_profile.calibration_runs["controller-a"]
+
+            self.assertEqual(run.axis_ranges["3:0"], {"min": -100, "max": 100})
+            self.assertEqual(run.pressed_buttons, {"1:304"})
 
 
 if __name__ == "__main__":

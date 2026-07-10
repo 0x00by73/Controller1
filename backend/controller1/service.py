@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from .devices import DeviceManager
 from .engine import MappingEngine
-from .models import AxisCalibration, Binding, InputRef, Profile
+from .models import AxisCalibration, Binding, CalibrationRun, InputRef, Profile
 from .outputs import VirtualOutputs
 from .store import ProfileStore
 
@@ -37,12 +37,15 @@ class ControllerService:
         self.learn_started = 0.0
         self.last_raw_emit = 0.0
         self.calibration_active = False
+        self.calibration_profile_id: str | None = None
+        self.calibration_device_id: str | None = None
         self.calibrating: set[str] = set()
         self.calibration_samples: dict[str, dict[str, int]] = {}
         self.calibration_values: dict[str, int] = {}
         self.calibration_pressed_buttons: set[str] = set()
         self.last_snapshot_emit = 0.0
         self.calibration_snapshot_task: asyncio.Task[None] | None = None
+        self.calibration_persist_task: asyncio.Task[None] | None = None
         self.emit_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
@@ -85,6 +88,9 @@ class ControllerService:
                     self.outputs.close()
 
     async def stop(self) -> None:
+        if self.calibration_active:
+            await self._persist_calibration_progress()
+        await self._cancel_calibration_persist()
         if self.engine:
             self.engine.release_all()
         if self.devices:
@@ -265,6 +271,14 @@ class ControllerService:
         if not self.devices or not self.devices.active_device or not self.evdev:
             raise RuntimeError("enable and select a controller before calibrating")
         await self._cancel_calibration_snapshot()
+        await self._cancel_calibration_persist()
+        profile = self.store.active_profile
+        if not profile.device_id:
+            raise RuntimeError("the active profile has no controller")
+        self.calibration_profile_id = profile.id
+        self.calibration_device_id = profile.device_id
+        profile.calibration_runs[self.calibration_device_id] = CalibrationRun()
+        self._save_and_reload(profile)
         self.calibration_active = True
         self.calibrating = {InputRef.from_dict(item).key for item in inputs}
         self.calibration_samples = {}
@@ -295,6 +309,7 @@ class ControllerService:
         profile = self._profile(profile_id)
         centers = centers or {}
         await self._cancel_calibration_snapshot()
+        await self._cancel_calibration_persist()
         if self.calibration_active:
             await self.emit("input_snapshot", self._calibration_snapshot())
         for key, sample in self.calibration_samples.items():
@@ -319,7 +334,17 @@ class ControllerService:
                 invert=previous.invert,
                 expo=previous.expo,
             )
+        if self.calibration_device_id:
+            profile.calibration_runs[self.calibration_device_id] = CalibrationRun(
+                axis_ranges={
+                    key: {"min": sample["min"], "max": sample["max"]}
+                    for key, sample in self.calibration_samples.items()
+                },
+                pressed_buttons=set(self.calibration_pressed_buttons),
+            )
         self.calibration_active = False
+        self.calibration_profile_id = None
+        self.calibration_device_id = None
         self.calibrating.clear()
         self.calibration_samples.clear()
         self.calibration_values.clear()
@@ -369,10 +394,11 @@ class ControllerService:
                 sample["min"] = min(sample["min"], value)
                 sample["max"] = max(sample["max"], value)
             self._queue_calibration_snapshot()
+            self._queue_calibration_persist()
         if self.learning:
             self._observe_learning(event)
         now = time.monotonic()
-        if now - self.last_raw_emit >= 1 / 30:
+        if not self.calibration_active and now - self.last_raw_emit >= 1 / 60:
             self.last_raw_emit = now
             self._schedule_emit(
                 "raw_input",
@@ -397,7 +423,7 @@ class ControllerService:
     def _queue_calibration_snapshot(self) -> None:
         if not self.calibration_active:
             return
-        delay = max(0.0, (1 / 30) - (time.monotonic() - self.last_snapshot_emit))
+        delay = max(0.0, (1 / 60) - (time.monotonic() - self.last_snapshot_emit))
         if delay == 0:
             self.last_snapshot_emit = time.monotonic()
             self._schedule_emit("input_snapshot", self._calibration_snapshot())
@@ -422,6 +448,41 @@ class ControllerService:
         self.calibration_snapshot_task.cancel()
         await asyncio.gather(self.calibration_snapshot_task, return_exceptions=True)
         self.calibration_snapshot_task = None
+
+    def _queue_calibration_persist(self) -> None:
+        if not self.calibration_active or self.calibration_persist_task:
+            return
+        self.calibration_persist_task = asyncio.get_running_loop().create_task(
+            self._persist_calibration_progress_after(0.5),
+            name="controller1-calibration-persist",
+        )
+
+    async def _persist_calibration_progress_after(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            await self._persist_calibration_progress()
+        finally:
+            self.calibration_persist_task = None
+
+    async def _persist_calibration_progress(self) -> None:
+        if not self.calibration_profile_id or not self.calibration_device_id:
+            return
+        profile = self._profile(self.calibration_profile_id)
+        profile.calibration_runs[self.calibration_device_id] = CalibrationRun(
+            axis_ranges={
+                key: {"min": sample["min"], "max": sample["max"]}
+                for key, sample in self.calibration_samples.items()
+            },
+            pressed_buttons=set(self.calibration_pressed_buttons),
+        )
+        self._save_and_reload(profile)
+
+    async def _cancel_calibration_persist(self) -> None:
+        if not self.calibration_persist_task:
+            return
+        self.calibration_persist_task.cancel()
+        await asyncio.gather(self.calibration_persist_task, return_exceptions=True)
+        self.calibration_persist_task = None
 
     def _observe_learning(self, event: Any) -> None:
         key = f"{event.type}:{event.code}"
@@ -453,6 +514,16 @@ class ControllerService:
     def _on_disconnect(self) -> None:
         if self.engine:
             self.engine.release_all()
+        if self.calibration_active:
+            self._schedule_calibration_persist_now()
+
+    def _schedule_calibration_persist_now(self) -> None:
+        if self.calibration_persist_task:
+            return
+        self.calibration_persist_task = asyncio.get_running_loop().create_task(
+            self._persist_calibration_progress_after(0),
+            name="controller1-calibration-persist",
+        )
 
     def _event_name(self, event_type: int, code: int) -> str:
         if not self.evdev:
