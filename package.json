@@ -1,6 +1,6 @@
 {
   "name": "controller1",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Persistent controller calibration and remapping for SteamOS",
   "type": "module",
   "scripts": {

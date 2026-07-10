@@ -102,7 +102,15 @@ class ControllerService:
         }
 
     async def refresh_devices(self) -> list[dict[str, Any]]:
-        return await self.devices.scan() if self.devices else []
+        if self.dependency_error:
+            raise RuntimeError(self.dependency_error)
+        if not self.devices:
+            raise RuntimeError("Controller1 device scanner is unavailable")
+        try:
+            return await self.devices.scan()
+        except Exception as error:
+            self.logger.error(f"Device refresh failed: {error}")
+            raise RuntimeError(f"Device refresh failed: {error}") from error
 
     async def set_enabled(self, enabled: bool, device_id: str | None = None) -> dict[str, Any]:
         if enabled and self.dependency_error:
@@ -173,7 +181,7 @@ class ControllerService:
         self.learn_thresholds.clear()
         device = self.devices.active_device
         e = self.evdev.ecodes
-        for code in device.capabilities().get(e.EV_ABS, []):
+        for code in device.capabilities(absinfo=False).get(e.EV_ABS, []):
             info = device.absinfo(code)
             key = f"{e.EV_ABS}:{code}"
             self.learn_baseline[key] = int(info.value)

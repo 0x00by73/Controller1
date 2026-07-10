@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 
@@ -64,8 +65,13 @@ class DeviceManager:
                 if self._is_candidate(device):
                     info = self._describe(device)
                     discovered[info["id"]] = info
-            except OSError:
-                continue
+            except OSError as error:
+                self._log("info", f"Could not open {path}: {error}")
+                info = self._describe_from_sysfs(path)
+                if info and self._is_candidate_info(info):
+                    discovered[info["id"]] = info
+            except Exception as error:
+                self._log("warning", f"Skipping {path}: {error}")
             finally:
                 if device:
                     device.close()
@@ -79,14 +85,28 @@ class DeviceManager:
             await self._detach()
         return list(discovered.values())
 
+    def _capabilities(self, device: Any) -> dict[int, list[int]]:
+        # evdev 1.9+ defaults absinfo=True, which returns (code, AbsInfo) tuples.
+        return device.capabilities(absinfo=False)
+
     def _is_candidate(self, device: Any) -> bool:
-        if device.name.startswith("Controller1 Virtual"):
+        return self._is_candidate_info(
+            {
+                "name": device.name or "",
+                "phys": device.phys or "",
+                "keyCodes": self._capabilities(device).get(self.evdev.ecodes.EV_KEY, []),
+                "absCodes": self._capabilities(device).get(self.evdev.ecodes.EV_ABS, []),
+            }
+        )
+
+    def _is_candidate_info(self, info: dict[str, Any]) -> bool:
+        name = str(info.get("name") or "")
+        if name.startswith("Controller1 Virtual"):
             return False
-        if device.phys == "controller1/virtual":
+        if str(info.get("phys") or "") == "controller1/virtual":
             return False
-        caps = device.capabilities()
         e = self.evdev.ecodes
-        keys = set(caps.get(e.EV_KEY, []))
+        keys = {int(code) for code in info.get("keyCodes", [])}
         has_gamepad_keys = any(
             getattr(e, "BTN_JOYSTICK", 0x120)
             <= code
@@ -94,31 +114,20 @@ class DeviceManager:
             for code in keys
         )
         joystick_axes = {
-            getattr(e, name)
-            for name in (
+            getattr(e, axis_name)
+            for axis_name in (
                 "ABS_X", "ABS_Y", "ABS_Z", "ABS_RX", "ABS_RY", "ABS_RZ",
                 "ABS_THROTTLE", "ABS_RUDDER", "ABS_WHEEL", "ABS_GAS", "ABS_BRAKE",
                 "ABS_HAT0X", "ABS_HAT0Y",
             )
-            if hasattr(e, name)
+            if hasattr(e, axis_name)
         }
-        axes = set(caps.get(e.EV_ABS, []))
+        axes = {int(code) for code in info.get("absCodes", [])}
         return has_gamepad_keys or len(axes & joystick_axes) >= 4
 
     def _describe(self, device: Any) -> dict[str, Any]:
         info = device.info
-        stable = "|".join(
-            [
-                f"{info.bustype:04x}",
-                f"{info.vendor:04x}",
-                f"{info.product:04x}",
-                device.uniq or "",
-                device.phys or "",
-                device.name or "",
-            ]
-        )
-        device_id = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:20]
-        caps = device.capabilities()
+        caps = self._capabilities(device)
         e = self.evdev.ecodes
         axes = [
             {"code": int(code), "name": self._event_name(e.EV_ABS, int(code))}
@@ -129,20 +138,124 @@ class DeviceManager:
             for code in caps.get(e.EV_KEY, [])
             if int(code) >= getattr(e, "BTN_MISC", 0x100)
         ]
-        return {
+        return self._build_device_info(
+            path=str(device.path),
+            name=str(device.name or ""),
+            phys=str(device.phys or ""),
+            uniq=str(device.uniq or ""),
+            bustype=int(info.bustype),
+            vendor=int(info.vendor),
+            product=int(info.product),
+            version=int(info.version),
+            axes=axes,
+            buttons=buttons,
+        )
+
+    def _describe_from_sysfs(self, path: str) -> dict[str, Any] | None:
+        sysfs = Path("/sys/class/input") / Path(path).name / "device"
+        if not sysfs.is_dir():
+            return None
+        try:
+            bustype = int(self._read_sysfs(sysfs / "id" / "bustype"), 16)
+            vendor = int(self._read_sysfs(sysfs / "id" / "vendor"), 16)
+            product = int(self._read_sysfs(sysfs / "id" / "product"), 16)
+            version = int(self._read_sysfs(sysfs / "id" / "version"), 16)
+        except ValueError:
+            return None
+        name = self._read_sysfs(sysfs / "name")
+        phys = self._read_sysfs(sysfs / "phys")
+        uniq = self._read_sysfs(sysfs / "uniq")
+        e = self.evdev.ecodes
+        abs_codes = self._parse_capability_bitmap(self._read_sysfs(sysfs / "capabilities" / "abs"))
+        key_codes = self._parse_capability_bitmap(self._read_sysfs(sysfs / "capabilities" / "key"))
+        axes = [
+            {"code": int(code), "name": self._event_name(e.EV_ABS, int(code))}
+            for code in abs_codes
+        ]
+        buttons = [
+            {"code": int(code), "name": self._event_name(e.EV_KEY, int(code))}
+            for code in key_codes
+            if int(code) >= getattr(e, "BTN_MISC", 0x100)
+        ]
+        if not self._is_candidate_info(
+            {
+                "name": name,
+                "phys": phys,
+                "keyCodes": key_codes,
+                "absCodes": abs_codes,
+            }
+        ):
+            return None
+        return self._build_device_info(
+            path=path,
+            name=name,
+            phys=phys,
+            uniq=uniq,
+            bustype=bustype,
+            vendor=vendor,
+            product=product,
+            version=version,
+            axes=axes,
+            buttons=buttons,
+        )
+
+    def _build_device_info(
+        self,
+        *,
+        path: str,
+        name: str,
+        phys: str,
+        uniq: str,
+        bustype: int,
+        vendor: int,
+        product: int,
+        version: int,
+        axes: list[dict[str, Any]],
+        buttons: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        stable = "|".join(
+            [
+                f"{bustype:04x}",
+                f"{vendor:04x}",
+                f"{product:04x}",
+                uniq,
+                phys,
+                name,
+            ]
+        )
+        device_id = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:20]
+        info = {
             "id": device_id,
-            "path": device.path,
-            "name": device.name,
-            "phys": device.phys,
-            "uniq": device.uniq,
-            "bus": info.bustype,
-            "vendor": info.vendor,
-            "product": info.product,
-            "version": info.version,
+            "path": path,
+            "name": name,
+            "phys": phys,
+            "uniq": uniq,
+            "bus": bustype,
+            "vendor": vendor,
+            "product": product,
+            "version": version,
             "axes": axes,
             "buttons": buttons,
-            "active": bool(self.active_device and self.active_device.path == device.path),
+            "active": bool(self.active_device and self.active_device.path == path),
         }
+        return info
+
+    def _read_sysfs(self, path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+
+    def _parse_capability_bitmap(self, raw: str) -> list[int]:
+        if not raw:
+            return []
+        codes: list[int] = []
+        for word_index, word in enumerate(raw.split()):
+            value = int(word, 16)
+            for bit in range(32):
+                if value & (1 << bit):
+                    codes.append(word_index * 32 + bit)
+        return codes
 
     async def _attach_selected(self, generation: int) -> None:
         async with self.attach_lock:
