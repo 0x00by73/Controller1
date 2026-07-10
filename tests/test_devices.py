@@ -3,6 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 
@@ -54,6 +55,9 @@ class FakeInputDevice:
 
     def ungrab(self):
         self.ungrabbed = True
+
+    def grab(self):
+        pass
 
     def close(self):
         self.closed = True
@@ -129,6 +133,34 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertTrue(device.closed)
         self.assertIsNone(manager.active_device)
         self.assertEqual(disconnects, [True])
+
+    def test_select_raises_when_controller_cannot_be_grabbed(self):
+        class BusyInputDevice(FakeInputDevice):
+            def grab(self):
+                raise OSError("device busy")
+
+        evdev = SimpleNamespace(InputDevice=lambda _path: BusyInputDevice())
+        manager = DeviceManager(
+            evdev,
+            lambda _event: None,
+            lambda _devices: None,
+            lambda: None,
+        )
+        manager.devices = {
+            "busy": {
+                "id": "busy",
+                "name": "Busy Gamepad",
+                "path": "/dev/input/event0",
+            }
+        }
+
+        with patch("controller1.devices.asyncio.sleep", new=AsyncMock()):
+            with self.assertRaisesRegex(
+                RuntimeError, "Could not capture controller: Busy Gamepad"
+            ):
+                asyncio.run(manager.select("busy"))
+
+        self.assertIsNone(manager.active_device)
 
 
 if __name__ == "__main__":

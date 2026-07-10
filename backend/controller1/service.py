@@ -83,7 +83,7 @@ class ControllerService:
         if self.store.state["enabled"]:
             try:
                 await self._activate(self.store.active_profile.device_id)
-            except (OSError, ValueError) as error:
+            except (OSError, RuntimeError, ValueError) as error:
                 self.logger.error(f"Could not restore Controller1: {error}")
                 self.store.state["enabled"] = False
                 self.store.save()
@@ -148,7 +148,7 @@ class ControllerService:
         if enabled:
             try:
                 await self._activate(profile.device_id)
-            except (OSError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 self.store.state["enabled"] = False
                 self.store.save()
                 await self._deactivate()
@@ -185,14 +185,14 @@ class ControllerService:
             try:
                 self.outputs.open()
                 await self.devices.select(active_device_id)
-            except (OSError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 self.outputs.close()
                 self.outputs.gamepad_name = old_gamepad_name
                 self.outputs.keyboard_name = old_keyboard_name
                 try:
                     self.outputs.open()
                     await self.devices.select(active_device_id)
-                except (OSError, ValueError) as restore_error:
+                except (OSError, RuntimeError, ValueError) as restore_error:
                     self.logger.error(f"Could not restore virtual outputs: {restore_error}")
                 raise
         elif self.outputs:
@@ -372,6 +372,7 @@ class ControllerService:
             return
         self.outputs.open()
         await self.devices.select(device_id)
+        self._configure_default_calibrations()
         self._seed_live_values()
         await self.emit("input_snapshot", self._live_snapshot())
 
@@ -466,6 +467,42 @@ class ControllerService:
             self.live_values[f"{e.EV_KEY}:{code}"] = 0
         for code in device.active_keys():
             self.live_values[f"{e.EV_KEY}:{code}"] = 1
+
+    def _configure_default_calibrations(self) -> None:
+        if not self.engine:
+            return
+        calibrations: dict[str, AxisCalibration] = {}
+        if not self.devices or not self.devices.active_device or not self.evdev:
+            self.engine.set_default_calibrations(calibrations)
+            return
+
+        device = self.devices.active_device
+        e = self.evdev.ecodes
+        trigger_codes = {
+            int(getattr(e, name))
+            for name in ("ABS_Z", "ABS_RZ")
+            if isinstance(getattr(e, name, None), int)
+        }
+        for code in device.capabilities(absinfo=False).get(e.EV_ABS, []):
+            try:
+                info = device.absinfo(code)
+                minimum = int(info.min)
+                maximum = int(info.max)
+            except (AttributeError, OSError, TypeError, ValueError):
+                continue
+            if maximum <= minimum:
+                continue
+            center = (
+                minimum
+                if int(code) in trigger_codes and minimum >= 0
+                else round((minimum + maximum) / 2)
+            )
+            calibrations[f"{e.EV_ABS}:{int(code)}"] = AxisCalibration(
+                minimum=minimum,
+                center=center,
+                maximum=maximum,
+            )
+        self.engine.set_default_calibrations(calibrations)
 
     def _calibration_snapshot(self) -> dict[str, Any]:
         return {

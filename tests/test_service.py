@@ -33,16 +33,32 @@ class FakeInputDevice:
         return [305]
 
 
+class TriggerInputDevice(FakeInputDevice):
+    def capabilities(self, absinfo=False):
+        return {3: [2], 1: []}
+
+    def absinfo(self, code):
+        assert code == 2
+        return SimpleNamespace(value=0, min=0, max=255)
+
+    def active_keys(self):
+        return []
+
+
 class FakeEngine:
     def __init__(self):
         self.raw_state = {}
         self.profile = None
+        self.default_calibrations = {}
 
     def process(self, event_type, code, value):
         self.raw_state[f"{event_type}:{code}"] = value
 
     def set_profile(self, profile):
         self.profile = profile
+
+    def set_default_calibrations(self, calibrations):
+        self.default_calibrations = calibrations
 
     def release_all(self):
         pass
@@ -79,6 +95,13 @@ class SelectableDevices(FakeDevices):
 
     async def select(self, device_id):
         self.selections.append(device_id)
+
+
+class FailingDevices(SelectableDevices):
+    async def select(self, device_id):
+        await super().select(device_id)
+        if device_id:
+            raise RuntimeError("Could not capture controller: Busy Gamepad")
 
 
 class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -129,6 +152,21 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.service.outputs.opened)
         self.assertEqual(self.service.outputs.close_count, 1)
         self.assertEqual(self.service.devices.selections, [None, "configured-device"])
+
+    async def test_enable_rolls_back_when_controller_capture_fails(self):
+        profile = self.service.store.active_profile
+        profile.device_id = "busy"
+        self.service.store.replace_profile(profile)
+        self.service.outputs = FakeOutputs()
+        self.service.devices = FailingDevices(FakeInputDevice())
+        self.service.engine = FakeEngine()
+
+        with self.assertRaisesRegex(RuntimeError, "Could not capture controller"):
+            await self.service.set_enabled(True)
+
+        self.assertFalse(self.service.store.state["enabled"])
+        self.assertFalse(self.service.outputs.opened)
+        self.assertEqual(self.service.devices.selections, ["busy", None])
 
     async def test_calibration_emits_aggregated_session_snapshot(self):
         device = FakeInputDevice()
@@ -199,6 +237,28 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(snapshots), 1)
         self.assertEqual(snapshots[-1]["values"]["3:0"], 100)
         self.assertEqual(snapshots[-1]["values"]["1:304"], 0)
+
+    async def test_device_ranges_seed_default_axis_calibration(self):
+        self.service.evdev = SimpleNamespace(
+            ecodes=SimpleNamespace(EV_ABS=3, ABS_Z=2, ABS_RZ=5)
+        )
+        self.service.devices = FakeDevices(FakeInputDevice())
+        self.service.engine = FakeEngine()
+
+        self.service._configure_default_calibrations()
+
+        calibration = self.service.engine.default_calibrations["3:0"]
+        self.assertEqual(calibration.minimum, -100)
+        self.assertEqual(calibration.center, 0)
+        self.assertEqual(calibration.maximum, 100)
+
+        self.service.devices = FakeDevices(TriggerInputDevice())
+        self.service._configure_default_calibrations()
+
+        trigger = self.service.engine.default_calibrations["3:2"]
+        self.assertEqual(trigger.minimum, 0)
+        self.assertEqual(trigger.center, 0)
+        self.assertEqual(trigger.maximum, 255)
 
 
 if __name__ == "__main__":

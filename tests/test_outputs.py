@@ -39,8 +39,16 @@ def fake_evdev():
         names[name] = index
     for index, name in enumerate(VirtualOutputs.MOUSE_MOVE_NAMES):
         names[name] = index
+    bytype = {
+        names["EV_KEY"]: {
+            names[name]: name for name in VirtualOutputs.GAMEPAD_BUTTON_NAMES
+        },
+        names["EV_ABS"]: {
+            names[name]: name for name in VirtualOutputs.GAMEPAD_AXIS_NAMES
+        },
+    }
     return SimpleNamespace(
-        ecodes=SimpleNamespace(**names),
+        ecodes=SimpleNamespace(**names, bytype=bytype),
         AbsInfo=lambda *values: values,
         UInput=FakeUInput,
     )
@@ -74,6 +82,20 @@ class VirtualOutputsTests(unittest.TestCase):
             {"code": "BTN_LEFT", "name": "BTN_LEFT"},
             catalog["key"],
         )
+
+    def test_standard_input_codes_resolve_to_virtual_controls(self):
+        outputs = VirtualOutputs(fake_evdev())
+        e = outputs.evdev.ecodes
+
+        self.assertEqual(
+            outputs.gamepad_control(e.EV_KEY, e.BTN_SOUTH),
+            ("gamepadButton", "BTN_SOUTH"),
+        )
+        self.assertEqual(
+            outputs.gamepad_control(e.EV_ABS, e.ABS_X),
+            ("gamepadAxis", "ABS_X"),
+        )
+        self.assertIsNone(outputs.gamepad_control(e.EV_KEY, e.BTN_LEFT))
 
 
 if __name__ == "__main__":

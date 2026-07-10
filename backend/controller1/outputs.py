@@ -123,6 +123,25 @@ class VirtualOutputs:
             if self._has_code(name)
         ]
 
+    def gamepad_control(self, event_type: int, code: int) -> tuple[str, str] | None:
+        e = self.evdev.ecodes
+        if event_type == e.EV_KEY:
+            allowed = self.GAMEPAD_BUTTON_NAMES
+            output_type = "gamepadButton"
+        elif event_type == e.EV_ABS:
+            allowed = self.GAMEPAD_AXIS_NAMES
+            output_type = "gamepadAxis"
+        else:
+            return None
+
+        names = e.bytype.get(event_type, {}).get(code, ())
+        if isinstance(names, str):
+            names = (names,)
+        for name in names:
+            if name in allowed:
+                return output_type, name
+        return None
+
     def _keyboard_codes(self) -> dict[str, int]:
         e = self.evdev.ecodes
         key_max = getattr(e, "KEY_MAX", 0x2FF)

@@ -54,7 +54,11 @@ class DeviceManager:
         self.selected_id = device_id
         await self._detach()
         if device_id:
-            await self._attach_selected(self.selection_generation)
+            attached = await self._attach_selected(self.selection_generation)
+            if not attached:
+                info = self.devices.get(device_id)
+                name = info["name"] if info else device_id
+                raise RuntimeError(f"Could not capture controller: {name}")
 
     async def scan(self) -> list[dict[str, Any]]:
         discovered: dict[str, dict[str, Any]] = {}
@@ -289,14 +293,14 @@ class DeviceManager:
                     codes.append(word_index * 32 + bit)
         return codes
 
-    async def _attach_selected(self, generation: int) -> None:
+    async def _attach_selected(self, generation: int) -> bool:
         async with self.attach_lock:
             for attempt in range(8):
                 if generation != self.selection_generation or self.active_device:
-                    return
+                    return self.active_device is not None
                 info = self.devices.get(self.selected_id or "")
                 if not info:
-                    return
+                    return False
                 device = None
                 try:
                     device = self.evdev.InputDevice(info["path"])
@@ -304,20 +308,21 @@ class DeviceManager:
                     if generation != self.selection_generation:
                         device.ungrab()
                         device.close()
-                        return
+                        return False
                     self.active_device = device
                     self.reader_task = asyncio.create_task(
                         self._read_loop(device), name="controller1-input"
                     )
                     self._log("info", f"Grabbed {device.name} at {device.path}")
-                    return
+                    return True
                 except OSError as error:
                     if device:
                         device.close()
                     if attempt == 7:
                         self._log("error", f"Could not grab {info['name']}: {error}")
-                        return
+                        return False
                     await asyncio.sleep(0.25 * (attempt + 1))
+        return False
 
     async def _detach(self) -> None:
         if self.reader_task:

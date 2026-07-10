@@ -18,6 +18,15 @@ from controller1.models import (
 class FakeOutputs:
     def __init__(self):
         self.events = []
+        self.controls = {
+            (1, 304): ("gamepadButton", "BTN_SOUTH"),
+            (1, 305): ("gamepadButton", "BTN_EAST"),
+            (3, 0): ("gamepadAxis", "ABS_X"),
+            (3, 2): ("gamepadAxis", "ABS_Z"),
+        }
+
+    def gamepad_control(self, event_type, code):
+        return self.controls.get((event_type, code))
 
     def key(self, code, pressed):
         self.events.append(("key", code, pressed))
@@ -77,6 +86,103 @@ class MappingEngineTests(unittest.TestCase):
         self.assertEqual(
             self.outputs.events,
             [("key", "KEY_ESC", True), ("key", "KEY_ESC", False)],
+        )
+
+    def test_unbound_standard_button_and_axis_pass_through(self):
+        axis = InputRef(3, 0, "ABS_X")
+        self.engine.set_profile(
+            Profile(
+                name="test",
+                calibrations={axis.key: AxisCalibration(-100, 0, 100, deadzone=0)},
+            )
+        )
+
+        self.engine.process(1, 304, 1)
+        self.engine.process(3, 0, 50)
+        self.engine.process(1, 304, 0)
+
+        self.assertEqual(
+            self.outputs.events,
+            [
+                ("gamepadButton", "BTN_SOUTH", True),
+                ("gamepadAxis", "ABS_X", 0.5),
+                ("gamepadButton", "BTN_SOUTH", False),
+            ],
+        )
+
+    def test_device_axis_range_is_used_without_saved_calibration(self):
+        trigger = InputRef(3, 2, "ABS_Z")
+        self.engine.set_default_calibrations(
+            {trigger.key: AxisCalibration(0, 0, 255, deadzone=0)}
+        )
+
+        self.engine.process(3, 2, 255)
+
+        self.assertEqual(self.outputs.events, [("gamepadAxis", "ABS_Z", 1.0)])
+
+    def test_explicit_binding_overrides_passthrough_source(self):
+        button = InputRef(1, 304, "BTN_SOUTH")
+        self.engine.set_profile(
+            Profile(
+                name="test",
+                bindings=[
+                    Binding(
+                        conditions=[Predicate(button, "pressed")],
+                        action=Action("gamepadButton", code="BTN_EAST"),
+                    )
+                ],
+            )
+        )
+
+        self.engine.process(1, 304, 1)
+        self.engine.process(1, 304, 0)
+
+        self.assertEqual(
+            self.outputs.events,
+            [
+                ("gamepadButton", "BTN_EAST", True),
+                ("gamepadButton", "BTN_EAST", False),
+            ],
+        )
+
+    def test_mapped_output_is_reserved_from_passthrough(self):
+        custom = InputRef(1, 400, "BTN_CUSTOM")
+        self.engine.set_profile(
+            Profile(
+                name="test",
+                bindings=[
+                    Binding(
+                        conditions=[Predicate(custom, "pressed")],
+                        action=Action("gamepadButton", code="BTN_SOUTH"),
+                    )
+                ],
+            )
+        )
+
+        self.engine.process(1, 304, 1)
+        self.engine.process(1, 400, 1)
+        self.engine.process(1, 400, 0)
+        self.engine.process(1, 304, 0)
+
+        self.assertEqual(
+            self.outputs.events,
+            [
+                ("gamepadButton", "BTN_SOUTH", True),
+                ("gamepadButton", "BTN_SOUTH", False),
+            ],
+        )
+
+    def test_release_all_releases_passthrough_button(self):
+        self.engine.process(1, 304, 1)
+
+        self.engine.release_all()
+
+        self.assertEqual(
+            self.outputs.events,
+            [
+                ("gamepadButton", "BTN_SOUTH", True),
+                ("gamepadButton", "BTN_SOUTH", False),
+            ],
         )
 
     def test_chord_requires_all_inputs(self):
