@@ -109,10 +109,23 @@ class CompilerTests(unittest.TestCase):
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_ignores_abs_noise_near_baseline(self):
+        session = DiscoverySession()
+        session.start("p", {"3:0": 1000, "3:1": 1000}, {"3:0": 0.02, "3:1": -0.01})
+        session.observe(3, 0, 1005, 0.03)
+        session.observe(3, 1, 1010, -0.02)
+        self.assertEqual(session.changed_inputs, set())
+        session.observe(3, 0, 1500, 0.5)
+        self.assertIn("3:0", session.changed_inputs)
+
+    def test_starts_in_observing_state(self):
+        session = DiscoverySession()
+        session.start("p", {"1:304": 0})
+        self.assertEqual(session.state, "observing")
+
     def test_classifies_mutually_exclusive_keys_as_switch3(self):
         session = DiscoverySession()
         session.start("p", {"1:288": 0, "1:289": 0})
-        session.begin_observation()
         for code, value in ((288, 1), (288, 0), (289, 1), (289, 0)):
             session.observe(1, code, value)
         candidate = session.finish_observation()
@@ -124,14 +137,12 @@ class DiscoveryTests(unittest.TestCase):
     def test_classifies_stable_axis_clusters_and_continuous_axis(self):
         switch = DiscoverySession()
         switch.start("p", {"3:0": 0})
-        switch.begin_observation()
         for value in (-1.0, -1.0, 0.0, 0.0, 1.0, 1.0):
             switch.observe(3, 0, round(value * 100), value)
         self.assertEqual(switch.finish_observation().kind, "switch3")
 
         analog = DiscoverySession()
         analog.start("p", {"3:0": 0})
-        analog.begin_observation()
         for value in (-1, -.7, -.3, 0, .25, .6, 1):
             analog.observe(3, 0, round(value * 100), value)
         self.assertEqual(analog.finish_observation().kind, "analog")

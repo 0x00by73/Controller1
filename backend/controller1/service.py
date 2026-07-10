@@ -387,15 +387,23 @@ class ControllerService:
         self._profile(profile_id)
         if not self.devices or not self.devices.active_device:
             raise RuntimeError("enable and select a controller before discovery")
-        self.discovery.start(profile_id, self.live_values)
+        self.discovery.start(
+            profile_id, self.live_values, self._normalized_snapshot()
+        )
         return self.discovery.status()
 
     async def begin_discovery_observation(self) -> dict[str, Any]:
-        self.discovery.begin_observation(self.live_values)
+        self.discovery.begin_observation(
+            self.live_values, self._normalized_snapshot()
+        )
         return self.discovery.status()
 
     async def finish_discovery_observation(self) -> dict[str, Any] | None:
         candidate = self.discovery.finish_observation()
+        if candidate is None:
+            self.discovery.begin_observation(
+                self.live_values, self._normalized_snapshot()
+            )
         return candidate.to_dict() if candidate else None
 
     async def stop_discovery(self) -> dict[str, Any]:
@@ -678,6 +686,20 @@ class ControllerService:
             self.live_values[f"{e.EV_KEY}:{code}"] = 0
         for code in device.active_keys():
             self.live_values[f"{e.EV_KEY}:{code}"] = 1
+
+    def _normalized_snapshot(self) -> dict[str, float]:
+        if not self.engine or not self.evdev:
+            return {}
+        result: dict[str, float] = {}
+        abs_prefix = f"{self.evdev.ecodes.EV_ABS}:"
+        for key, value in self.live_values.items():
+            if not key.startswith(abs_prefix):
+                continue
+            event_type, code = key.split(":", 1)
+            result[key] = self.engine.normalized(
+                InputRef(int(event_type), int(code)), value
+            )
+        return result
 
     def _configure_default_calibrations(self) -> None:
         if not self.engine:

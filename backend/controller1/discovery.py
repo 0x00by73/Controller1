@@ -9,6 +9,7 @@ from .models import InputRef, LogicalControl, LogicalPosition, Predicate
 
 EV_KEY = 1
 EV_ABS = 3
+ABS_ACTIVE_THRESHOLD = 0.12
 
 
 class DiscoverySession:
@@ -21,6 +22,7 @@ class DiscoverySession:
         self.profile_id: str | None = None
         self.state = "idle"
         self.baseline: dict[str, int] = {}
+        self.baseline_normalized: dict[str, float] = {}
         self.current: dict[str, int] = {}
         self.samples: dict[str, list[float]] = defaultdict(list)
         self.key_states: set[tuple[tuple[str, int], ...]] = set()
@@ -28,20 +30,36 @@ class DiscoverySession:
         self.candidate: LogicalControl | None = None
         self.name_resolver = name_resolver
 
-    def start(self, profile_id: str, snapshot: dict[str, int]) -> None:
+    def start(
+        self,
+        profile_id: str,
+        snapshot: dict[str, int],
+        normalized_snapshot: dict[str, float] | None = None,
+    ) -> None:
         self.active = True
         self.profile_id = profile_id
-        self.state = "ready"
-        self.baseline = dict(snapshot)
-        self.current = dict(snapshot)
-        self._clear_observation()
+        self._begin_observation(snapshot, normalized_snapshot)
 
-    def begin_observation(self, snapshot: dict[str, int] | None = None) -> None:
+    def begin_observation(
+        self,
+        snapshot: dict[str, int] | None = None,
+        normalized_snapshot: dict[str, float] | None = None,
+    ) -> None:
         if not self.active:
             raise RuntimeError("discovery is not active")
-        if snapshot is not None:
-            self.baseline = dict(snapshot)
-            self.current = dict(snapshot)
+        if snapshot is None:
+            snapshot = self.baseline
+            normalized_snapshot = self.baseline_normalized
+        self._begin_observation(snapshot, normalized_snapshot)
+
+    def _begin_observation(
+        self,
+        snapshot: dict[str, int],
+        normalized_snapshot: dict[str, float] | None = None,
+    ) -> None:
+        self.baseline = dict(snapshot)
+        self.baseline_normalized = dict(normalized_snapshot or {})
+        self.current = dict(snapshot)
         self._clear_observation()
         self.state = "observing"
         self._capture_key_state()
@@ -53,19 +71,31 @@ class DiscoverySession:
             return
         key = f"{event_type}:{code}"
         self.current[key] = value
-        if value != self.baseline.get(key, 0):
-            self.changed_inputs.add(key)
         if event_type == EV_KEY:
+            if value != self.baseline.get(key, 0):
+                self.changed_inputs.add(key)
             self.samples[key].append(float(value != 0))
             self._capture_key_state()
         elif event_type == EV_ABS:
-            self.samples[key].append(float(value if normalized is None else normalized))
+            sample_value = float(value if normalized is None else normalized)
+            self.samples[key].append(sample_value)
+            if self._abs_moved(key, value, normalized):
+                self.changed_inputs.add(key)
+
+    def _abs_moved(
+        self, key: str, value: int, normalized: float | None
+    ) -> bool:
+        baseline_norm = self.baseline_normalized.get(key)
+        if normalized is not None and baseline_norm is not None:
+            return abs(normalized - baseline_norm) > ABS_ACTIVE_THRESHOLD
+        baseline = self.baseline.get(key, 0)
+        return abs(value - baseline) > max(32, abs(baseline) // 16)
 
     def finish_observation(self) -> LogicalControl | None:
         if not self.active or self.state != "observing":
             raise RuntimeError("no discovery observation is active")
         self.candidate = self._classify()
-        self.state = "candidate" if self.candidate else "ready"
+        self.state = "candidate" if self.candidate else "observing"
         return self.candidate
 
     def stop(self) -> None:
@@ -78,8 +108,7 @@ class DiscoverySession:
     def status(self) -> dict[str, Any]:
         prompts = {
             "idle": "Start discovery",
-            "ready": "Move one control through every position",
-            "observing": "Move only that control, then finish",
+            "observing": "Move one control through every position, then tap Next",
             "candidate": "Review the detected control",
         }
         result: dict[str, Any] = {

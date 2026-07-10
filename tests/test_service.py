@@ -325,7 +325,6 @@ class ControllerServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         await self.service.start_discovery(profile_id)
-        await self.service.begin_discovery_observation()
         self.service._on_input(SimpleNamespace(type=1, code=304, value=1))
         self.service._on_input(SimpleNamespace(type=1, code=304, value=0))
         candidate = await self.service.finish_discovery_observation()

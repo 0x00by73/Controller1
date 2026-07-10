@@ -644,10 +644,10 @@ function LogicalControlCard({
           {saving
             ? "Saving…"
             : review && !control.confirmed
-              ? "Confirm, save, and continue"
-              : review
-                ? "Save and continue"
-                : "Save control"}
+            ? "Confirm and continue"
+            : review
+              ? "Save and continue"
+              : "Save control"}
         </DialogButton>
       </div>
       {bindActive && (
@@ -707,17 +707,32 @@ function DiscoverPage({
   };
 
   const begin = () => profile && run(() => startDiscovery(profile.id));
-  const observe = () => run(beginDiscoveryObservation);
-  const finish = () => run(finishDiscoveryObservation);
+  const next = async () => {
+    setBusy(true);
+    try {
+      const candidate = await finishDiscoveryObservation();
+      await refreshDiscovery();
+      await reload();
+      if (!candidate) {
+        toaster.toast({
+          title: "Controller1",
+          body: "Couldn't classify that control. Move one control through every position, then tap Next again.",
+        });
+      }
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setBusy(false);
+    }
+  };
   const cancel = () => run(stopDiscovery);
 
   const saveCandidate = async (candidate: LogicalControl) => {
     if (!profile) return;
     await saveLogicalControl(profile.id, candidate);
-    await stopDiscovery();
-    await reload();
-    await startDiscovery(profile.id);
+    await beginDiscoveryObservation();
     await refreshDiscovery();
+    await reload();
   };
 
   const removeControl = async (controlId: string) => {
@@ -732,13 +747,12 @@ function DiscoverPage({
 
   if (!profile) return null;
   const observing = discovery.state === "observing" || discovery.state === "observation";
-  const awaitingMove = discovery.active && !observing && !discovery.candidate;
 
   return (
     <Focusable className="Controller1_Content" flow-children="column">
       <PageHeader
         title="Discover controls"
-        description="Add one physical control at a time. Controller1 groups every position into one semantic control."
+        description="Tap Start, move one physical control through every position, then tap Next. Repeat for each control."
         badge={<span className="Controller1_Badge"><FaSearch /> {profile.logicalControls.length} controls</span>}
       />
 
@@ -756,15 +770,15 @@ function DiscoverPage({
       ) : (
         <div className="Controller1_Card Controller1_Discovery">
           <div className="Controller1_DiscoveryStep">
-            <span className="Controller1_StepNumber">{discovery.active ? (observing ? "2" : "1") : "1"}</span>
+            <span className="Controller1_StepNumber">{discovery.active ? "1" : "1"}</span>
             <div>
               <div className="Controller1_CardTitle">
-                {observing ? "Move one control through every position" : "Ready to discover a control"}
+                {discovery.active ? "Move one control" : "Ready to discover controls"}
               </div>
               <div className="Controller1_Subtitle">
-                {discovery.prompt || (observing
-                  ? "Move only the control you are adding, pausing briefly at each position."
-                  : "Start discovery, then move one button, axis, or switch.")}
+                {discovery.prompt || (discovery.active
+                  ? "Use one button, switch, or axis at a time. Pause briefly at each position."
+                  : "Tap Start, then move the first control you want to add.")}
               </div>
             </div>
           </div>
@@ -778,14 +792,11 @@ function DiscoverPage({
           <div className="Controller1_Actions">
             {discovery.active && <DialogButton disabled={busy} onClick={cancel}>Cancel</DialogButton>}
             {!discovery.active && (
-              <DialogButton disabled={busy || !status.connected} onClick={begin}>Start discovery</DialogButton>
-            )}
-            {awaitingMove && (
-              <DialogButton disabled={busy} onClick={observe}>Begin observation</DialogButton>
+              <DialogButton disabled={busy || !status.connected} onClick={begin}>Start</DialogButton>
             )}
             {observing && (
-              <DialogButton disabled={busy || discovery.changedInputs.length === 0} onClick={finish}>
-                Finish and classify
+              <DialogButton disabled={busy || discovery.changedInputs.length === 0} onClick={next}>
+                Next
               </DialogButton>
             )}
           </div>
