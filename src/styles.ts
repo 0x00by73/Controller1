@@ -475,6 +475,56 @@ export const controllerStyles = `
   background: var(--c1-surface);
 }
 
+.Controller1_Control--selected {
+  border-color: rgba(89, 191, 64, 0.75) !important;
+  box-shadow: inset 0 0 0 1px rgba(89, 191, 64, 0.35);
+}
+
+.Controller1_Control--grouped {
+  border-color: rgba(90, 187, 255, 0.45);
+}
+
+.Controller1_ControlBadges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.Controller1_Badge--group {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(26, 159, 255, 0.18);
+  border-color: rgba(90, 187, 255, 0.35);
+}
+
+.Controller1_GroupTag {
+  margin-left: 8px;
+  color: #70c3ff;
+}
+
+.Controller1_GroupTag--selected {
+  color: #8fd86f;
+}
+
+.Controller1_SelectBanner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-color: rgba(229, 168, 75, 0.45);
+}
+
+.Controller1_TypeOption {
+  cursor: pointer;
+}
+
+.Controller1_TypeOption:focus,
+.Controller1_TypeOption:hover {
+  border-color: rgba(90, 187, 255, 0.55);
+}
+
 .Controller1_LogicalCard {
   display: flex;
   flex-direction: column;

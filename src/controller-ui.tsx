@@ -21,9 +21,9 @@ import {
   FaBug,
   FaCheck,
   FaGamepad,
+  FaHandPointer,
   FaLink,
   FaPlay,
-  FaSearch,
   FaSlidersH,
   FaStop,
   FaTrash,
@@ -31,25 +31,22 @@ import {
 import {
   Action,
   Binding,
-  DiscoveryStatus,
   Device,
   InputRef,
   InputSnapshot,
   LogicalControl,
+  LogicalPosition,
   OutputCatalog,
   OutputOption,
   PipelineEntry,
   Profile,
   Status,
   beginCalibration,
-  beginDiscoveryObservation,
   createProfile,
   deleteBinding,
   deleteLogicalControl,
   finishCalibration,
-  finishDiscoveryObservation,
   getDebugReport,
-  getDiscoveryStatus,
   getOutputCatalog,
   getPipelineSnapshot,
   getStatus,
@@ -60,10 +57,8 @@ import {
   setOutputNames,
   setProfile,
   startBindAssist,
-  startDiscovery,
   startLearning,
   stopBindAssist,
-  stopDiscovery,
 } from "./api";
 import { controllerStyles } from "./styles";
 
@@ -168,6 +163,177 @@ function modeNote(mode: Profile["outputMode"]): string {
     return "Hybrid preserves standard controls and falls back to extended outputs when capacity is reached.";
   }
   return "Maximum compatibility. Extra controls fall back to available standard outputs.";
+}
+
+type ControlTypeOption = {
+  id: string;
+  label: string;
+  description: string;
+  kind: LogicalControl["kind"];
+};
+
+function findLogicalControlForInput(
+  input: InputRef,
+  controls: LogicalControl[],
+): LogicalControl | undefined {
+  const key = eventKey(input);
+  return controls.find((control) => (
+    control.sources.some((source) => eventKey(source) === key)
+    || control.positions.some((position) => position.conditions.some(
+      (condition) => eventKey(condition.input) === key,
+    ))
+  ));
+}
+
+function controlTypeOptions(inputs: InputRef[]): ControlTypeOption[] {
+  const axisCount = inputs.filter((input) => input.eventType === 3).length;
+  const buttonCount = inputs.filter((input) => input.eventType === 1).length;
+  const options: ControlTypeOption[] = [];
+
+  if (inputs.length === 1 && axisCount === 1) {
+    options.push(
+      {
+        id: "analog",
+        label: "Analog axis",
+        description: "Continuous stick, trigger, or dial.",
+        kind: "analog",
+      },
+      {
+        id: "switch3-axis",
+        label: "3-position switch",
+        description: "Low, center, and high ranges on one axis.",
+        kind: "switch3",
+      },
+    );
+  }
+  if (inputs.length === 1 && buttonCount === 1) {
+    options.push({
+      id: "button",
+      label: "Momentary button",
+      description: "Press and release.",
+      kind: "button",
+    });
+  }
+  if (inputs.length === 2 && buttonCount === 2) {
+    options.push(
+      {
+        id: "switch2",
+        label: "2-position switch",
+        description: "Two mutually exclusive button positions.",
+        kind: "switch2",
+      },
+      {
+        id: "push-push",
+        label: "Push-push toggle",
+        description: "Two-state toggle switch.",
+        kind: "switch2",
+      },
+    );
+  }
+  if (inputs.length === 3 && buttonCount === 3) {
+    options.push({
+      id: "switch3",
+      label: "3-position switch",
+      description: "Three mutually exclusive button positions.",
+      kind: "switch3",
+    });
+  }
+  return options;
+}
+
+function buildLogicalControlFromSelection(
+  inputs: InputRef[],
+  type: ControlTypeOption,
+): LogicalControl {
+  const id = `control-${Date.now()}`;
+  const name = inputs.map(friendlyInputName).join(" / ");
+
+  if (type.kind === "analog") {
+    return {
+      id,
+      name,
+      kind: "analog",
+      sources: inputs,
+      positions: [],
+      confidence: 1,
+      confirmed: true,
+    };
+  }
+
+  if (type.kind === "button") {
+    return {
+      id,
+      name,
+      kind: "button",
+      sources: inputs,
+      positions: [{
+        id: "pressed",
+        label: "Pressed",
+        conditions: [{ input: inputs[0], test: "pressed" }],
+      }],
+      confidence: 1,
+      confirmed: true,
+    };
+  }
+
+  if (type.kind === "switch2") {
+    const labels = type.id === "push-push" ? ["Off", "On"] : ["Position 1", "Position 2"];
+    return {
+      id,
+      name,
+      kind: "switch2",
+      sources: inputs,
+      positions: inputs.map((input, index) => ({
+        id: `pos-${index}`,
+        label: labels[index] ?? `Position ${index + 1}`,
+        conditions: [{ input, test: "pressed" }],
+      })),
+      confidence: 1,
+      confirmed: true,
+    };
+  }
+
+  if (type.id === "switch3-axis") {
+    const source = inputs[0];
+    return {
+      id,
+      name: friendlyInputName(source),
+      kind: "switch3",
+      sources: inputs,
+      positions: AXIS_POSITION_PRESETS.map((preset) => ({
+        id: preset.label.toLowerCase(),
+        label: preset.label,
+        conditions: [{
+          input: source,
+          test: "axisRange",
+          axisRange: preset.range,
+        }],
+      })),
+      confidence: 1,
+      confirmed: true,
+    };
+  }
+
+  return {
+    id,
+    name,
+    kind: "switch3",
+    sources: inputs,
+    positions: inputs.map((input, index) => ({
+      id: `pos-${index}`,
+      label: ["Low", "Center", "High"][index] ?? `Position ${index + 1}`,
+      conditions: [{ input, test: "pressed" }],
+    })),
+    confidence: 1,
+    confirmed: true,
+  };
+}
+
+function inputAlreadyGrouped(
+  input: InputRef,
+  controls: LogicalControl[],
+): boolean {
+  return Boolean(findLogicalControlForInput(input, controls));
 }
 
 function notifyError(error: unknown) {
@@ -418,6 +584,9 @@ const AxisCard = memo(function AxisCard({
   observedMax,
   stored,
   onSelect,
+  selected,
+  groupLabel,
+  selectMode,
 }: {
   axis: Device["axes"][number];
   current: number;
@@ -425,6 +594,9 @@ const AxisCard = memo(function AxisCard({
   observedMax?: number;
   stored?: { min: number; center: number; max: number };
   onSelect: (input: InputRef) => void;
+  selected?: boolean;
+  groupLabel?: string;
+  selectMode?: boolean;
 }) {
   const input = { eventType: 3, code: axis.code, name: axis.name };
   const minimum = axis.min ?? stored?.min ?? observedMin ?? -32768;
@@ -444,16 +616,26 @@ const AxisCard = memo(function AxisCard({
 
   return (
     <Focusable
-      className={`Controller1_Card Controller1_Control ${coverage >= 0.8 ? "Controller1_Card--active" : ""}`}
+      className={[
+        "Controller1_Card",
+        "Controller1_Control",
+        coverage >= 0.8 ? "Controller1_Card--active" : "",
+        selected ? "Controller1_Control--selected" : "",
+        groupLabel ? "Controller1_Control--grouped" : "",
+      ].join(" ")}
       focusClassName="Controller1_Control--focused"
       onActivate={() => onSelect(input)}
       onClick={() => onSelect(input)}
-      onOKActionDescription="Configure mapping"
+      onOKActionDescription={selectMode ? "Toggle selection" : "Configure control"}
     >
       <div className="Controller1_CardTitle">
         <span>{friendlyInputName(input)}</span>
-        <span className={`Controller1_Badge ${coverage >= 0.8 ? "Controller1_Badge--good" : ""}`}>
-          {Math.round(coverage * 100)}%
+        <span className="Controller1_ControlBadges">
+          {groupLabel && <span className="Controller1_Badge Controller1_Badge--group">{groupLabel}</span>}
+          {selected && <span className="Controller1_Badge Controller1_Badge--good"><FaCheck /> Selected</span>}
+          <span className={`Controller1_Badge ${coverage >= 0.8 ? "Controller1_Badge--good" : ""}`}>
+            {Math.round(coverage * 100)}%
+          </span>
         </span>
       </div>
       <div className="Controller1_Meta">EV_ABS · code {axis.code} · raw {current}</div>
@@ -479,11 +661,17 @@ const ButtonControl = memo(function ButtonControl({
   pressed,
   seen,
   onSelect,
+  selected,
+  groupLabel,
+  selectMode,
 }: {
   button: Device["buttons"][number];
   pressed: boolean;
   seen: boolean;
   onSelect: (input: InputRef) => void;
+  selected?: boolean;
+  groupLabel?: string;
+  selectMode?: boolean;
 }) {
   const input = { eventType: 1, code: button.code, name: button.name };
   return (
@@ -493,38 +681,113 @@ const ButtonControl = memo(function ButtonControl({
         "Controller1_Control",
         pressed ? "Controller1_ButtonChip--pressed" : "",
         seen ? "Controller1_ButtonChip--seen" : "",
+        selected ? "Controller1_Control--selected" : "",
+        groupLabel ? "Controller1_Control--grouped" : "",
       ].join(" ")}
       focusClassName="Controller1_Control--focused"
       onActivate={() => onSelect(input)}
       onClick={() => onSelect(input)}
-      onOKActionDescription="Configure mapping"
+      onOKActionDescription={selectMode ? "Toggle selection" : "Configure control"}
     >
       <div className="Controller1_ButtonName">{friendlyInputName(input)}</div>
-      <div className="Controller1_Meta">EV_KEY · {button.code}</div>
+      <div className="Controller1_Meta">
+        EV_KEY · {button.code}
+        {groupLabel && <span className="Controller1_GroupTag">{groupLabel}</span>}
+        {selected && <span className="Controller1_GroupTag Controller1_GroupTag--selected">Selected</span>}
+      </div>
     </Focusable>
   );
 });
 
-function LogicalControlCard({
-  profileId,
-  control,
-  bindActive,
-  review = false,
-  onSaved,
-  onRefresh,
-  onDeleted,
+function ControlPipelinePreview({
+  controlId,
+  connected,
 }: {
-  profileId: string;
-  control: LogicalControl;
-  bindActive: boolean;
-  review?: boolean;
-  onSaved: (control: LogicalControl) => Promise<void>;
-  onRefresh: () => Promise<unknown>;
-  onDeleted?: () => Promise<void>;
+  controlId: string;
+  connected: boolean;
 }) {
-  const defaultName = /^\s*[\[(].*,.*[\])]\s*$/.test(control.name)
-    ? friendlyInputName(control.sources[0] ?? { eventType: 1, code: 0, name: "" })
-    : control.name;
+  const [entries, setEntries] = useState<PipelineEntry[]>([]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const snapshot = await getPipelineSnapshot();
+      setEntries(snapshot.filter((entry) => entry.logicalControlId === controlId));
+    } catch {
+      setEntries([]);
+    }
+  }, [controlId]);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 500);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  if (!connected) {
+    return <div className="Controller1_Empty Controller1_Empty--compact">Connect a controller to preview output.</div>;
+  }
+  if (entries.length === 0) {
+    return (
+      <div className="Controller1_Empty Controller1_Empty--compact">
+        Move this control to see physical input, position, and virtual output.
+      </div>
+    );
+  }
+
+  return (
+    <div className="Controller1_Stack" aria-live="polite">
+      {entries.map((entry, index) => {
+        const physical = entry.physical
+          ? friendlyInputName(entry.physical)
+          : "No physical event";
+        const output = entry.virtual
+          ? `${entry.virtual.kind} · ${STANDARD_INPUT_NAMES[entry.virtual.code] ?? entry.virtual.code} · ${entry.virtual.value}`
+          : "No output";
+        return (
+          <div
+            className={`Controller1_PipelineRow ${entry.virtual?.emitted ? "Controller1_PipelineRow--emitted" : ""}`}
+            key={`${entry.logicalControlId}:${entry.position ?? ""}:${index}`}
+          >
+            <div className="Controller1_PipelineStage">
+              <span>Physical</span>
+              <strong>{physical}</strong>
+              {entry.physical && <small>value {entry.physical.value ?? "—"}</small>}
+            </div>
+            <span className="Controller1_PipelineArrow">→</span>
+            <div className="Controller1_PipelineStage">
+              <span>Position</span>
+              <strong>{entry.name}</strong>
+              <small>{entry.position || "Between positions"}</small>
+            </div>
+            <span className="Controller1_PipelineArrow">→</span>
+            <div className="Controller1_PipelineStage">
+              <span>Virtual</span>
+              <strong>{output}</strong>
+              <small>{entry.virtual?.emitted ? "Emitted" : "Not emitted"}</small>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function GroupedControlModal({
+  control,
+  profile,
+  catalog,
+  status,
+  closeModal,
+  onChanged,
+}: {
+  control: LogicalControl;
+  profile: Profile;
+  catalog: OutputCatalog | undefined;
+  status: Status;
+  closeModal: () => void;
+  onChanged: () => Promise<unknown>;
+}) {
+  const defaultName = control.name.trim() || friendlyInputName(control.sources[0] ?? { eventType: 1, code: 0, name: "" });
   const [draft, setDraft] = useState<LogicalControl>({
     ...control,
     name: defaultName,
@@ -534,12 +797,14 @@ function LogicalControlCard({
     })),
   });
   const [saving, setSaving] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const bindActive = status.bindAssisting && status.bindAssistControlId === control.id;
+  const gamepadOutputs = outputOptions(catalog, "gamepadButton");
+  const axisOutputs = outputOptions(catalog, "gamepadAxis");
 
   useEffect(() => {
     setDraft({
       ...control,
-      name: /^\s*[\[(].*,.*[\])]\s*$/.test(control.name) ? defaultName : control.name,
+      name: control.name.trim() || defaultName,
       positions: control.positions.map((position, index) => ({
         ...position,
         label: position.label || `Position ${index + 1}`,
@@ -547,287 +812,301 @@ function LogicalControlCard({
     });
   }, [control, defaultName]);
 
+  const updatePosition = (index: number, patch: Partial<LogicalPosition>) => {
+    setDraft((current) => ({
+      ...current,
+      positions: current.positions.map((position, itemIndex) => itemIndex === index
+        ? { ...position, ...patch }
+        : position),
+    }));
+  };
+
   const save = async () => {
     setSaving(true);
     try {
-      await onSaved({
+      await saveLogicalControl(profile.id, {
         ...draft,
-        name: draft.name.trim() || defaultName || "Control",
+        name: draft.name.trim() || defaultName,
         confirmed: true,
         positions: draft.positions.map((position, index) => ({
           ...position,
           label: position.label.trim() || `Position ${index + 1}`,
         })),
       });
+      await onChanged();
+      toaster.toast({ title: "Controller1", body: "Control saved" });
+    } catch (error) {
+      notifyError(error);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    try {
+      await deleteLogicalControl(profile.id, control.id);
+      await onChanged();
+      closeModal();
+    } catch (error) {
+      notifyError(error);
     }
   };
 
   const toggleBind = async () => {
     try {
       if (bindActive) await stopBindAssist();
-      else await startBindAssist(profileId, control.id);
-      await onRefresh();
+      else await startBindAssist(profile.id, control.id);
+      await onChanged();
     } catch (error) {
       notifyError(error);
     }
   };
 
   return (
-    <Focusable
-      className={`Controller1_Card Controller1_LogicalCard ${bindActive ? "Controller1_LogicalCard--binding" : ""}`}
-      flow-children="column"
+    <ModalRoot
+      closeModal={closeModal}
+      onCancel={closeModal}
+      className="Controller1_ModalRoot"
+      modalClassName="Controller1_ModalFrame"
     >
-      <div className="Controller1_CardTitle">
-        <span>{review ? "Review discovered control" : draft.name}</span>
-        <span className={`Controller1_Badge ${bindActive ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
-          {bindActive ? <><FaBolt /> Bind assist active</> : draft.kind}
-        </span>
-      </div>
-      {review && !control.confirmed && (
-        <div className="Controller1_ReviewNotice">
-          Check the positions below, then confirm this control.
-        </div>
-      )}
-      <TextField
-        label="Control name"
-        value={draft.name}
-        onChange={(event) => setDraft((current) => ({ ...current, name: event.currentTarget.value }))}
-      />
-      <div className="Controller1_Positions">
-        {draft.positions.map((position, index) => (
-          <div className="Controller1_PositionRow" key={position.id}>
-            <TextField
-              label={`Position ${index + 1}`}
-              value={position.label}
-              onChange={(event) => {
-                const label = event.currentTarget.value;
-                setDraft((current) => ({
-                  ...current,
-                  positions: current.positions.map((item, itemIndex) => itemIndex === index
-                    ? { ...item, label }
-                    : item),
-                }));
-              }}
-            />
-            <div className="Controller1_PositionOutput">{actionLabel(position.action ?? draft.action)}</div>
+      <Focusable className="Controller1 Controller1_Modal" flow-children="column">
+        <header className="Controller1_ModalHeader">
+          <div className="Controller1_ControlIcon" aria-hidden="true">
+            <FaSlidersH />
           </div>
-        ))}
-      </div>
-      {!draft.action && draft.positions.every((position) => !position.action) && (
-        <div className="Controller1_Subtitle">Outputs are assigned automatically when this control is saved.</div>
-      )}
-      <DialogButton onClick={() => setShowAdvanced((shown) => !shown)}>
-        {showAdvanced ? "Hide details" : "Advanced details"}
-      </DialogButton>
-      {showAdvanced && (
-        <div className="Controller1_AdvancedDetails">
-          {draft.sources.map((source) => (
-            <div key={eventKey(source)}>
-              <strong>{friendlyInputName(source)}</strong>
-              <span> {source.eventType === 3 ? "EV_ABS" : "EV_KEY"} · code {source.code}</span>
+          <div className="Controller1_ModalTitle">
+            <h2>{draft.name || defaultName}</h2>
+            <p>{draft.kind} · {draft.positions.length || 1} position{(draft.positions.length || 1) === 1 ? "" : "s"}</p>
+          </div>
+          <span className={`Controller1_Badge ${bindActive ? "Controller1_Badge--warn" : ""}`}>
+            {bindActive ? <><FaBolt /> Binding</> : draft.kind}
+          </span>
+        </header>
+        <div className="Controller1_ModalBody">
+          <TextField
+            label="Control name"
+            value={draft.name}
+            onChange={(event) => setDraft((current) => ({ ...current, name: event.currentTarget.value }))}
+          />
+          {draft.kind === "analog" ? (
+            <section className="Controller1_Assigned">
+              <div className="Controller1_FormHeading">
+                <div>
+                  <h3>Continuous output</h3>
+                  <p>Mapped automatically to a free virtual axis when saved.</p>
+                </div>
+              </div>
+              <div className="Controller1_PositionOutput">{actionLabel(draft.action)}</div>
+            </section>
+          ) : (
+            <section className="Controller1_Assigned">
+              <div className="Controller1_FormHeading">
+                <div>
+                  <h3>Position mappings</h3>
+                  <p>Name each position and choose what it emits.</p>
+                </div>
+              </div>
+              <div className="Controller1_Positions">
+                {draft.positions.map((position, index) => {
+                  const action = position.action;
+                  const outputType = action?.type ?? "gamepadButton";
+                  const outputs = outputType === "gamepadAxis" ? axisOutputs : gamepadOutputs;
+                  const outputCode = action?.code ?? outputs[0]?.code ?? "";
+                  return (
+                    <div className="Controller1_PositionRow" key={position.id}>
+                      <TextField
+                        label={`Position ${index + 1}`}
+                        value={position.label}
+                        onChange={(event) => updatePosition(index, { label: event.currentTarget.value })}
+                      />
+                      <DropdownItem
+                        label="Virtual output"
+                        rgOptions={outputs.map((option) => ({
+                          data: option.code,
+                          label: option.name && option.name !== option.code
+                            ? `${option.name} · ${option.code}`
+                            : option.code,
+                        }))}
+                        selectedOption={outputCode}
+                        onChange={(option) => updatePosition(index, {
+                          action: {
+                            type: outputType,
+                            code: String(option.data),
+                          },
+                        })}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+          <section className="Controller1_Assigned">
+            <div className="Controller1_FormHeading">
+              <div>
+                <h3>Live preview</h3>
+                <p>Physical input → position → virtual output.</p>
+              </div>
             </div>
-          ))}
+            <ControlPipelinePreview controlId={control.id} connected={status.connected} />
+          </section>
+          {bindActive && (
+            <div className="Controller1_BindBanner">
+              Move a position now. Only that newly moved position is temporarily emitted.
+            </div>
+          )}
         </div>
-      )}
-      <div className="Controller1_Actions">
-        {!review && onDeleted && (
-          <DialogButton onClick={onDeleted}><FaTrash /> Delete</DialogButton>
-        )}
-        {!review && (
+        <footer className="Controller1_ModalFooter">
+          <DialogButton onClick={remove}><FaTrash /> Delete</DialogButton>
           <DialogButton onClick={toggleBind}>
             {bindActive ? <><FaStop /> Stop bind assist</> : <><FaPlay /> Bind in game</>}
           </DialogButton>
-        )}
-        <DialogButton disabled={saving} onClick={save}>
-          {saving
-            ? "Saving…"
-            : review && !control.confirmed
-            ? "Confirm and continue"
-            : review
-              ? "Save and continue"
-              : "Save control"}
-        </DialogButton>
-      </div>
-      {bindActive && (
-        <div className="Controller1_BindBanner">
-          Move a position now. Only that newly moved position is temporarily emitted.
-        </div>
-      )}
-    </Focusable>
+          <DialogButton disabled={saving} onClick={save}>
+            {saving ? "Saving…" : "Save"}
+          </DialogButton>
+          <DialogButton onClick={closeModal}>Done</DialogButton>
+        </footer>
+      </Focusable>
+    </ModalRoot>
   );
 }
 
-function DiscoverPage({
-  status,
-  reload,
+function ControlTypePickerModal({
+  inputs,
+  profileId,
+  closeModal,
+  onCreated,
 }: {
-  status: Status;
-  reload: () => Promise<Status>;
+  inputs: InputRef[];
+  profileId: string;
+  closeModal: () => void;
+  onCreated: () => Promise<unknown>;
 }) {
-  const profile = status.profiles.find((item) => item.id === status.activeProfileId);
-  const [discovery, setDiscovery] = useState<DiscoveryStatus>({
-    active: false,
-    state: "idle",
-    prompt: "",
-    changedInputs: [],
-  });
+  const options = controlTypeOptions(inputs);
   const [busy, setBusy] = useState(false);
 
-  const refreshDiscovery = useCallback(async () => {
-    try {
-      setDiscovery(await getDiscoveryStatus());
-    } catch (error) {
-      notifyError(error);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshDiscovery();
-  }, [refreshDiscovery]);
-
-  useEffect(() => {
-    if (!discovery.active && !status.discovering) return;
-    const timer = window.setInterval(() => void refreshDiscovery(), 500);
-    return () => window.clearInterval(timer);
-  }, [discovery.active, refreshDiscovery, status.discovering]);
-
-  const run = async (operation: () => Promise<unknown>) => {
+  const create = async (type: ControlTypeOption) => {
     setBusy(true);
     try {
-      await operation();
-      await refreshDiscovery();
-      await reload();
+      const control = buildLogicalControlFromSelection(inputs, type);
+      const saved = await saveLogicalControl(profileId, control);
+      await onCreated();
+      closeModal();
+      showGroupedControlModal(saved, profileId, onCreated);
+      toaster.toast({ title: "Controller1", body: `${type.label} created` });
     } catch (error) {
       notifyError(error);
     } finally {
       setBusy(false);
     }
   };
-
-  const begin = () => profile && run(() => startDiscovery(profile.id));
-  const next = async () => {
-    setBusy(true);
-    try {
-      const candidate = await finishDiscoveryObservation();
-      await refreshDiscovery();
-      await reload();
-      if (!candidate) {
-        toaster.toast({
-          title: "Controller1",
-          body: "Couldn't classify that control. Move one control through every position, then tap Next again.",
-        });
-      }
-    } catch (error) {
-      notifyError(error);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const cancel = () => run(stopDiscovery);
-
-  const saveCandidate = async (candidate: LogicalControl) => {
-    if (!profile) return;
-    await saveLogicalControl(profile.id, candidate);
-    await beginDiscoveryObservation();
-    await refreshDiscovery();
-    await reload();
-  };
-
-  const removeControl = async (controlId: string) => {
-    if (!profile) return;
-    try {
-      await deleteLogicalControl(profile.id, controlId);
-      await reload();
-    } catch (error) {
-      notifyError(error);
-    }
-  };
-
-  if (!profile) return null;
-  const observing = discovery.state === "observing" || discovery.state === "observation";
 
   return (
-    <Focusable className="Controller1_Content" flow-children="column">
-      <PageHeader
-        title="Discover controls"
-        description="Tap Start, move one physical control through every position, then tap Next. Repeat for each control."
-        badge={<span className="Controller1_Badge"><FaSearch /> {profile.logicalControls.length} controls</span>}
-      />
-
-      {!status.connected ? (
-        <div className="Controller1_Empty">Open Setup and connect a controller before discovery.</div>
-      ) : discovery.candidate ? (
-        <LogicalControlCard
-          profileId={profile.id}
-          control={discovery.candidate}
-          bindActive={false}
-          review
-          onSaved={saveCandidate}
-          onRefresh={reload}
-        />
-      ) : (
-        <div className="Controller1_Card Controller1_Discovery">
-          <div className="Controller1_DiscoveryStep">
-            <span className="Controller1_StepNumber">{discovery.active ? "1" : "1"}</span>
-            <div>
-              <div className="Controller1_CardTitle">
-                {discovery.active ? "Move one control" : "Ready to discover controls"}
-              </div>
-              <div className="Controller1_Subtitle">
-                {discovery.prompt || (discovery.active
-                  ? "Use one button, switch, or axis at a time. Pause briefly at each position."
-                  : "Tap Start, then move the first control you want to add.")}
-              </div>
-            </div>
+    <ModalRoot
+      closeModal={closeModal}
+      onCancel={closeModal}
+      className="Controller1_ModalRoot"
+      modalClassName="Controller1_ModalFrame"
+    >
+      <Focusable className="Controller1 Controller1_Modal" flow-children="column">
+        <header className="Controller1_ModalHeader">
+          <div className="Controller1_ControlIcon" aria-hidden="true"><FaHandPointer /></div>
+          <div className="Controller1_ModalTitle">
+            <h2>Create control</h2>
+            <p>{inputs.length} input{inputs.length === 1 ? "" : "s"} selected</p>
           </div>
-          {discovery.changedInputs.length > 0 && (
-            <div className="Controller1_Chips">
-              {discovery.changedInputs.map((input) => (
-                <span className="Controller1_Chip" key={eventKey(input)}>{friendlyInputName(input)}</span>
+        </header>
+        <div className="Controller1_ModalBody">
+          <div className="Controller1_Chips">
+            {inputs.map((input) => (
+              <span className="Controller1_Chip" key={eventKey(input)}>
+                {input.eventType === 3 ? <FaSlidersH /> : <FaGamepad />}
+                {friendlyInputName(input)}
+              </span>
+            ))}
+          </div>
+          {options.length === 0 ? (
+            <div className="Controller1_Empty">
+              Select 1 axis, 1 button, 2 buttons, or 3 buttons to create a control.
+            </div>
+          ) : (
+            <div className="Controller1_Stack">
+              {options.map((option) => (
+                <Focusable
+                  key={option.id}
+                  className="Controller1_Card Controller1_TypeOption"
+                  onActivate={() => !busy && create(option)}
+                  onClick={() => !busy && create(option)}
+                >
+                  <div className="Controller1_CardTitle">
+                    <span>{option.label}</span>
+                    <span className="Controller1_Badge">{option.kind}</span>
+                  </div>
+                  <div className="Controller1_Subtitle">{option.description}</div>
+                </Focusable>
               ))}
             </div>
           )}
-          <div className="Controller1_Actions">
-            {discovery.active && <DialogButton disabled={busy} onClick={cancel}>Cancel</DialogButton>}
-            {!discovery.active && (
-              <DialogButton disabled={busy || !status.connected} onClick={begin}>Start</DialogButton>
-            )}
-            {observing && (
-              <DialogButton disabled={busy || discovery.changedInputs.length === 0} onClick={next}>
-                Next
-              </DialogButton>
-            )}
-          </div>
         </div>
-      )}
+        <footer className="Controller1_ModalFooter">
+          <DialogButton onClick={closeModal}>Cancel</DialogButton>
+        </footer>
+      </Focusable>
+    </ModalRoot>
+  );
+}
 
-      <PageHeader
-        title="Configured controls"
-        description="Each card is saved atomically with all of its semantic positions."
-      />
-      {profile.logicalControls.length === 0 ? (
-        <div className="Controller1_Empty">No semantic controls yet. Start discovery above.</div>
-      ) : (
-        <div className="Controller1_Stack">
-          {profile.logicalControls.map((control) => (
-            <LogicalControlCard
-              key={control.id}
-              profileId={profile.id}
-              control={control}
-              bindActive={status.bindAssisting && status.bindAssistControlId === control.id}
-              onSaved={async (updated) => {
-                await saveLogicalControl(profile.id, updated);
-                await reload();
-              }}
-              onRefresh={reload}
-              onDeleted={() => removeControl(control.id)}
-            />
-          ))}
-        </div>
-      )}
-    </Focusable>
+function showGroupedControlModal(
+  control: LogicalControl,
+  profileId: string,
+  onChanged: () => Promise<unknown>,
+) {
+  let modal: ReturnType<typeof showModal>;
+  const closeModal = () => modal.Close();
+  const open = async () => {
+    const [nextStatus, nextCatalog] = await Promise.all([getStatus(), getOutputCatalog()]);
+    const profile = nextStatus.profiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    const resolved = profile.logicalControls.find((item) => item.id === control.id) ?? control;
+    modal = showModal(
+      <GroupedControlModal
+        control={resolved}
+        profile={profile}
+        catalog={nextCatalog}
+        status={nextStatus}
+        closeModal={closeModal}
+        onChanged={async () => {
+          await onChanged();
+          const refreshed = await getStatus();
+          const refreshedProfile = refreshed.profiles.find((item) => item.id === profileId);
+          if (!refreshedProfile?.logicalControls.some((item) => item.id === control.id)) {
+            closeModal();
+          }
+        }}
+      />,
+      window,
+      { strTitle: "" },
+    );
+  };
+  void open().catch(notifyError);
+}
+
+function showControlTypePickerModal(
+  inputs: InputRef[],
+  profileId: string,
+  onCreated: () => Promise<unknown>,
+) {
+  let modal: ReturnType<typeof showModal>;
+  const closeModal = () => modal.Close();
+  modal = showModal(
+    <ControlTypePickerModal
+      inputs={inputs}
+      profileId={profileId}
+      closeModal={closeModal}
+      onCreated={onCreated}
+    />,
+    window,
+    { strTitle: "" },
   );
 }
 
@@ -849,6 +1128,8 @@ function CalibrationPage({
   const profile = status.profiles.find((item) => item.id === status.activeProfileId);
   const device = status.devices.find((item) => item.id === profile?.deviceId && item.active)
     ?? status.devices.find((item) => item.active);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedInputs, setSelectedInputs] = useState<InputRef[]>([]);
   const persistedRun = device ? profile?.calibrationRuns[device.id] : undefined;
   const axisRanges = {
     ...(persistedRun?.axisRanges ?? {}),
@@ -869,6 +1150,8 @@ function CalibrationPage({
   const buttonComplete = device?.buttons.filter((button) => seenButtons.has(`1:${button.code}`)).length ?? 0;
   const complete = axisComplete + buttonComplete;
   const progress = total ? Math.min(100, Math.round((complete / total) * 100)) : 0;
+  const logicalControls = profile?.logicalControls ?? [];
+  const typeOptions = controlTypeOptions(selectedInputs);
 
   const start = async () => {
     if (!device) return;
@@ -895,17 +1178,72 @@ function CalibrationPage({
     }
   };
 
-  const selectControl = useCallback((input: InputRef) => {
+  const toggleSelectMode = () => {
+    setSelectMode((active) => {
+      if (active) setSelectedInputs([]);
+      return !active;
+    });
+  };
+
+  const toggleSelectedInput = useCallback((input: InputRef) => {
+    if (inputAlreadyGrouped(input, logicalControls)) {
+      toaster.toast({
+        title: "Controller1",
+        body: "That input is already part of a control group.",
+      });
+      return;
+    }
+    setSelectedInputs((current) => {
+      const key = eventKey(input);
+      const exists = current.some((item) => eventKey(item) === key);
+      if (exists) return current.filter((item) => eventKey(item) !== key);
+      if (current.length >= 3) {
+        toaster.toast({ title: "Controller1", body: "Select up to 3 inputs at a time." });
+        return current;
+      }
+      return [...current, input];
+    });
+  }, [logicalControls]);
+
+  const activateControl = useCallback((input: InputRef) => {
     if (!profile) return;
+    if (selectMode) {
+      toggleSelectedInput(input);
+      return;
+    }
+    const grouped = findLogicalControlForInput(input, logicalControls);
+    if (grouped) {
+      showGroupedControlModal(grouped, profile.id, reload);
+      return;
+    }
     showControlMappingModal(input, profile, catalog, reload);
-  }, [catalog, profile, reload]);
+  }, [catalog, logicalControls, profile, reload, selectMode, toggleSelectedInput]);
+
+  const createFromSelection = () => {
+    if (!profile || selectedInputs.length === 0) return;
+    if (typeOptions.length === 0) {
+      toaster.toast({
+        title: "Controller1",
+        body: "Select 1 axis, 1 button, 2 buttons, or 3 buttons.",
+      });
+      return;
+    }
+    showControlTypePickerModal(selectedInputs, profile.id, async () => {
+      setSelectedInputs([]);
+      setSelectMode(false);
+      await reload();
+    });
+  };
+
+  const groupLabelFor = (input: InputRef) => findLogicalControlForInput(input, logicalControls)?.name;
+  const isSelected = (input: InputRef) => selectedInputs.some((item) => eventKey(item) === eventKey(input));
 
   if (!status.connected || !device || !profile) {
     return (
       <div className="Controller1_Content">
         <PageHeader
-          title="Advanced controls"
-          description="Raw calibration and input diagnostics for troubleshooting."
+          title="Controls"
+          description="Live controller inputs, calibration, and mapping."
         />
         <div className="Controller1_Empty">Open Setup and connect a controller.</div>
       </div>
@@ -915,13 +1253,19 @@ function CalibrationPage({
   return (
     <Focusable className="Controller1_Content" flow-children="column">
       <PageHeader
-        title="Advanced controls"
-        description={status.calibrating
-          ? "Move every axis through its full travel and press every available button."
-          : "Raw calibration and per-event diagnostics. Use Discover for normal setup."}
+        title="Controls"
+        description={selectMode
+          ? "Tap up to 3 inputs, then create a switch or other control type."
+          : status.calibrating
+            ? "Move every axis through its full travel and press every available button."
+            : "Tap a control to configure it. Use Select to combine inputs into switches."}
         badge={(
-          <span className={`Controller1_Badge ${status.calibrating ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
-            {status.calibrating ? <><FaBolt /> Recording</> : <><FaCheck /> Ready</>}
+          <span className={`Controller1_Badge ${selectMode || status.calibrating ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
+            {selectMode
+              ? <><FaHandPointer /> {selectedInputs.length} selected</>
+              : status.calibrating
+                ? <><FaBolt /> Recording</>
+                : <><FaCheck /> {logicalControls.length} groups</>}
           </span>
         )}
       />
@@ -933,6 +1277,36 @@ function CalibrationPage({
         </div>
         <div className="Controller1_Subtitle">{modeNote(profile.outputMode)}</div>
       </div>
+
+      {selectMode && (
+        <div className="Controller1_Card Controller1_SelectBanner">
+          <div className="Controller1_CardTitle">
+            <span>Selection mode</span>
+            <span className="Controller1_Badge">{selectedInputs.length} / 3</span>
+          </div>
+          <div className="Controller1_Subtitle">
+            Pick inputs that belong to the same physical control, then choose a control type.
+          </div>
+          {selectedInputs.length > 0 && (
+            <div className="Controller1_Chips">
+              {selectedInputs.map((input) => (
+                <span className="Controller1_Chip" key={eventKey(input)}>
+                  {friendlyInputName(input)}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="Controller1_Actions">
+            <DialogButton onClick={() => setSelectedInputs([])}>Clear</DialogButton>
+            <DialogButton
+              disabled={selectedInputs.length === 0 || typeOptions.length === 0}
+              onClick={createFromSelection}
+            >
+              Create control
+            </DialogButton>
+          </div>
+        </div>
+      )}
 
       <div className="Controller1_Card">
         <div className="Controller1_CardTitle">
@@ -949,36 +1323,51 @@ function CalibrationPage({
         description="White marker is live input; blue is the observed range; endpoints are hardware limits."
       />
       <div className="Controller1_Grid Controller1_Grid--three">
-        {device.axes.map((axis) => (
-          <AxisCard
-            key={axis.code}
-            axis={axis}
-            current={snapshot.values[`3:${axis.code}`] ?? axis.value ?? profile.calibrations[`3:${axis.code}`]?.center ?? 0}
-            observedMin={axisRanges[`3:${axis.code}`]?.min}
-            observedMax={axisRanges[`3:${axis.code}`]?.max}
-            stored={profile.calibrations[`3:${axis.code}`]}
-            onSelect={selectControl}
-          />
-        ))}
+        {device.axes.map((axis) => {
+          const input = { eventType: 3, code: axis.code, name: axis.name };
+          return (
+            <AxisCard
+              key={axis.code}
+              axis={axis}
+              current={snapshot.values[`3:${axis.code}`] ?? axis.value ?? profile.calibrations[`3:${axis.code}`]?.center ?? 0}
+              observedMin={axisRanges[`3:${axis.code}`]?.min}
+              observedMax={axisRanges[`3:${axis.code}`]?.max}
+              stored={profile.calibrations[`3:${axis.code}`]}
+              onSelect={activateControl}
+              selected={isSelected(input)}
+              groupLabel={groupLabelFor(input)}
+              selectMode={selectMode}
+            />
+          );
+        })}
       </div>
 
       <PageHeader
         title={`Buttons · ${device.buttons.length}`}
-        description="These are hardware-advertised buttons. Blue means pressed now; green means an event was observed."
+        description="Blue means pressed now; green means an event was observed."
       />
       <div className="Controller1_ButtonGrid">
-        {device.buttons.map((button) => (
-          <ButtonControl
-            key={button.code}
-            button={button}
-            pressed={Boolean(snapshot.values[`1:${button.code}`])}
-            seen={seenButtons.has(`1:${button.code}`)}
-            onSelect={selectControl}
-          />
-        ))}
+        {device.buttons.map((button) => {
+          const input = { eventType: 1, code: button.code, name: button.name };
+          return (
+            <ButtonControl
+              key={button.code}
+              button={button}
+              pressed={Boolean(snapshot.values[`1:${button.code}`])}
+              seen={seenButtons.has(`1:${button.code}`)}
+              onSelect={activateControl}
+              selected={isSelected(input)}
+              groupLabel={groupLabelFor(input)}
+              selectMode={selectMode}
+            />
+          );
+        })}
       </div>
 
       <div className="Controller1_Actions">
+        <DialogButton onClick={toggleSelectMode}>
+          {selectMode ? "Done selecting" : <><FaHandPointer /> Select</>}
+        </DialogButton>
         <DialogButton onClick={status.calibrating ? finish : start}>
           {status.calibrating ? "Finish and save" : "Start calibration"}
         </DialogButton>
@@ -1475,83 +1864,6 @@ function ChordsPage({
   );
 }
 
-function TestPage({ status }: { status: Status }) {
-  const [entries, setEntries] = useState<PipelineEntry[]>([]);
-  const [error, setError] = useState("");
-
-  const refresh = useCallback(async () => {
-    try {
-      setEntries(await getPipelineSnapshot());
-      setError("");
-    } catch (reason) {
-      setError(String(reason));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 500);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
-
-  return (
-    <Focusable className="Controller1_Content" flow-children="column">
-      <PageHeader
-        title="Test pipeline"
-        description="Live physical input → semantic position → virtual output."
-        badge={(
-          <span className={`Controller1_Badge ${status.connected ? "Controller1_Badge--good" : ""}`}>
-            {status.connected ? "Live" : "Disconnected"}
-          </span>
-        )}
-      />
-      {error && <div className="Controller1_Error">Could not read pipeline: {error}</div>}
-      {!error && entries.length === 0 ? (
-        <div className="Controller1_Empty">
-          Move a configured control to see it travel through the pipeline.
-        </div>
-      ) : (
-        <div className="Controller1_Stack" aria-live="polite">
-          {entries.map((entry, index) => {
-            const physical = entry.physical
-              ? friendlyInputName(entry.physical)
-              : "No physical event";
-            const output = entry.virtual
-              ? `${entry.virtual.kind} · ${STANDARD_INPUT_NAMES[entry.virtual.code] ?? entry.virtual.code} · ${entry.virtual.value}`
-              : "No output";
-            return (
-              <div
-                className={`Controller1_PipelineRow ${entry.virtual?.emitted ? "Controller1_PipelineRow--emitted" : ""}`}
-                key={`${entry.logicalControlId}:${entry.position ?? ""}:${index}`}
-              >
-                <div className="Controller1_PipelineStage">
-                  <span>Physical</span>
-                  <strong>{physical}</strong>
-                  {entry.physical && (
-                    <small>value {entry.physical.value ?? "—"}</small>
-                  )}
-                </div>
-                <span className="Controller1_PipelineArrow">→</span>
-                <div className="Controller1_PipelineStage">
-                  <span>Logical</span>
-                  <strong>{entry.name}</strong>
-                  <small>{entry.position || "Between positions"}</small>
-                </div>
-                <span className="Controller1_PipelineArrow">→</span>
-                <div className="Controller1_PipelineStage">
-                  <span>Virtual</span>
-                  <strong>{output}</strong>
-                  <small>{entry.virtual?.emitted ? "Emitted" : "Not emitted"}</small>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Focusable>
-  );
-}
-
 async function copyText(value: string) {
   if (navigator.clipboard?.writeText) {
     try {
@@ -1641,11 +1953,20 @@ export function ControllerApp() {
         showTitle
         pages={[
           {
-            title: "Discover",
-            identifier: "discover",
-            icon: <FaSearch />,
+            title: "Controls",
+            identifier: "controls",
+            icon: <FaSlidersH />,
             padding: "none",
-            content: <DiscoverPage status={status} reload={controller.reload} />,
+            content: (
+              <CalibrationPage
+                status={status}
+                catalog={controller.catalog}
+                snapshot={controller.snapshot}
+                setSnapshot={controller.setSnapshot}
+                setStatus={controller.setStatus}
+                reload={controller.reload}
+              />
+            ),
           },
           {
             title: "Setup",
@@ -1671,29 +1992,6 @@ export function ControllerApp() {
                 catalog={controller.catalog}
                 learned={controller.learned}
                 setLearned={controller.setLearned}
-                reload={controller.reload}
-              />
-            ),
-          },
-          {
-            title: "Test",
-            identifier: "test",
-            icon: <FaBolt />,
-            padding: "none",
-            content: <TestPage status={status} />,
-          },
-          {
-            title: "Advanced Controls",
-            identifier: "advanced-controls",
-            icon: <FaSlidersH />,
-            padding: "none",
-            content: (
-              <CalibrationPage
-                status={status}
-                catalog={controller.catalog}
-                snapshot={controller.snapshot}
-                setSnapshot={controller.setSnapshot}
-                setStatus={controller.setStatus}
                 reload={controller.reload}
               />
             ),
