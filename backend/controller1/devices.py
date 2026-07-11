@@ -6,6 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .suppress import PhysicalSuppressor
+
 
 def canonical_event_name(evdev_module: Any, event_type: int, code: int) -> str:
     names = evdev_module.ecodes.bytype.get(event_type, {}).get(code, str(code))
@@ -43,9 +45,13 @@ class DeviceManager:
         self.running = False
         self.selection_generation = 0
         self.attach_lock = asyncio.Lock()
+        self.suppressor = PhysicalSuppressor(logger)
+        self.silenced_devices: list[Any] = []
+        self.suppression_state: dict[str, Any] | None = None
 
     async def start(self) -> None:
         self.running = True
+        self.suppressor.deactivate()
         self._start_udev_observer()
         await self.scan()
         self.scan_task = asyncio.create_task(self._scan_loop(), name="controller1-hotplug")
@@ -60,6 +66,7 @@ class DeviceManager:
             await asyncio.gather(self.scan_task, return_exceptions=True)
             self.scan_task = None
         await self._detach()
+        self.suppressor.deactivate()
 
     async def select(self, device_id: str | None) -> None:
         self.selection_generation += 1
@@ -371,6 +378,7 @@ class DeviceManager:
                     self.reader_task = asyncio.create_task(
                         self._read_loop(device), name="controller1-input"
                     )
+                    await self._silence_physical_device(info, device.path)
                     if self.on_connection_changed:
                         self.on_connection_changed()
                     self._log("info", f"Grabbed {device.name} at {device.path}")
@@ -389,6 +397,9 @@ class DeviceManager:
             self.reader_task.cancel()
             await asyncio.gather(self.reader_task, return_exceptions=True)
             self.reader_task = None
+        self._release_silenced_devices()
+        self.suppressor.deactivate()
+        self.suppression_state = None
         if self.active_device:
             try:
                 self.active_device.ungrab()
@@ -398,6 +409,45 @@ class DeviceManager:
             self.active_device = None
             if self.on_connection_changed:
                 self.on_connection_changed()
+
+    async def _silence_physical_device(
+        self, info: dict[str, Any], primary_path: str
+    ) -> None:
+        self._release_silenced_devices()
+        vendor = int(info.get("vendor") or 0)
+        product = int(info.get("product") or 0)
+        if vendor == 0 and product == 0:
+            self._log(
+                "warning",
+                "Physical controller has no USB identity; sibling suppression skipped",
+            )
+            return
+        self.suppression_state = self.suppressor.activate(
+            primary_path, vendor, product
+        )
+        for path in self.suppressor.sibling_event_paths(primary_path):
+            device = None
+            try:
+                device = self.evdev.InputDevice(path)
+                device.grab()
+                self.silenced_devices.append(device)
+                self._log("info", f"Silenced sibling input node {path}")
+            except OSError as error:
+                if device:
+                    device.close()
+                self._log("warning", f"Could not silence sibling {path}: {error}")
+
+    def _release_silenced_devices(self) -> None:
+        for device in self.silenced_devices:
+            try:
+                device.ungrab()
+            except OSError:
+                pass
+            try:
+                device.close()
+            except OSError:
+                pass
+        self.silenced_devices.clear()
 
     async def _read_loop(self, device: Any) -> None:
         try:
@@ -417,6 +467,9 @@ class DeviceManager:
                     pass
                 device.close()
                 self.active_device = None
+                self._release_silenced_devices()
+                self.suppressor.deactivate()
+                self.suppression_state = None
                 self.on_disconnect()
                 if self.on_connection_changed:
                     self.on_connection_changed()

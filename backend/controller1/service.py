@@ -295,6 +295,7 @@ class ControllerService:
                 ),
             },
             "physicalDevices": list(self.devices.devices.values()) if self.devices else [],
+            "physicalSuppression": getattr(self.devices, "suppression_state", None),
             "eventCounters": {
                 "physicalRead": self.input_event_count,
                 "virtualEmitted": self.output_event_count,

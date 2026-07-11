@@ -17,9 +17,13 @@ Controller1 is intended to be the mapping layer:
    remapping. Controller1's keyboard/mouse output bypasses Steam Input.
 
 The physical evdev node is held with `EVIOCGRAB`, preventing normal evdev and
-joydev consumers from seeing duplicate input. A supported controller that
-Steam opens directly through `hidraw` can bypass `EVIOCGRAB`; disable Steam
-Input for that controller/game if duplicate input occurs.
+joydev consumers from seeing duplicate input. While Controller1 is enabled it
+also grabs sibling evdev nodes from the same USB device and installs a temporary
+udev rule that hides the physical controller from SteamOS and desktop consumers.
+That rule blocks matching `hidraw` nodes (the path Steam Input uses for devices
+like EdgeTX/RadioMaster `1209:4f54`) and clears `ID_INPUT_JOYSTICK` on the
+physical evdev nodes. Only the virtual Xbox 360 output should remain visible in
+the system controller menu.
 
 ## Mapping examples
 

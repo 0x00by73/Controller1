@@ -15,7 +15,7 @@ import {
   removeEventListener,
   toaster,
 } from "@decky/api";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FaBolt,
   FaBug,
@@ -88,6 +88,22 @@ const AXIS_POSITION_PRESETS = [
 
 const eventKey = (input: InputRef) => `${input.eventType}:${input.code}`;
 const inputType = (input: InputRef) => input.eventType === 3 ? "Axis" : "Button";
+
+// Decky Focusable can invoke both onActivate and onClick for one interaction.
+function guardDuplicateActivation(handler: () => void): () => void {
+  let locked = false;
+  return () => {
+    if (locked) return;
+    locked = true;
+    try {
+      handler();
+    } finally {
+      queueMicrotask(() => {
+        locked = false;
+      });
+    }
+  };
+}
 
 const STANDARD_INPUT_NAMES: Record<string, string> = {
   BTN_SOUTH: "A button",
@@ -679,6 +695,10 @@ const AxisCard = memo(function AxisCard({
   const coverage = hasObservedRange
     ? Math.max(0, Math.min(1, (observedMax - observedMin) / span))
     : 0;
+  const activate = useMemo(
+    () => guardDuplicateActivation(() => onSelect(input)),
+    [onSelect, input],
+  );
 
   return (
     <Focusable
@@ -690,8 +710,8 @@ const AxisCard = memo(function AxisCard({
         groupLabel ? "Controller1_Control--grouped" : "",
       ].join(" ")}
       focusClassName="Controller1_Control--focused"
-      onActivate={() => onSelect(input)}
-      onClick={() => onSelect(input)}
+      onActivate={activate}
+      onClick={activate}
       onOKActionDescription={selectMode ? "Toggle selection" : "Configure control"}
     >
       <div className="Controller1_CardTitle">
@@ -740,6 +760,10 @@ const ButtonControl = memo(function ButtonControl({
   selectMode?: boolean;
 }) {
   const input = { eventType: 1, code: button.code, name: button.name };
+  const activate = useMemo(
+    () => guardDuplicateActivation(() => onSelect(input)),
+    [onSelect, input],
+  );
   return (
     <Focusable
       className={[
@@ -751,8 +775,8 @@ const ButtonControl = memo(function ButtonControl({
         groupLabel ? "Controller1_Control--grouped" : "",
       ].join(" ")}
       focusClassName="Controller1_Control--focused"
-      onActivate={() => onSelect(input)}
-      onClick={() => onSelect(input)}
+      onActivate={activate}
+      onClick={activate}
       onOKActionDescription={selectMode ? "Toggle selection" : "Configure control"}
     >
       <div className="Controller1_ButtonName">{friendlyInputName(input)}</div>
@@ -869,12 +893,14 @@ function ConfiguredControlsSection({
         </div>
       ) : (
         <div className="Controller1_ControlInventory">
-          {controls.map((control) => (
+          {controls.map((control) => {
+            const activate = guardDuplicateActivation(() => onEdit(control));
+            return (
             <Focusable
               key={control.id}
               className="Controller1_InventoryCard"
-              onActivate={() => onEdit(control)}
-              onClick={() => onEdit(control)}
+              onActivate={activate}
+              onClick={activate}
               onOKActionDescription="Edit control"
             >
               <div className="Controller1_CardTitle">
@@ -894,7 +920,8 @@ function ConfiguredControlsSection({
                 )}
               </div>
             </Focusable>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -1228,12 +1255,16 @@ function ControlTypePickerModal({
             </div>
           ) : (
             <div className="Controller1_Stack">
-              {options.map((option) => (
+              {options.map((option) => {
+                const activate = guardDuplicateActivation(() => {
+                  if (!busy) void create(option);
+                });
+                return (
                 <Focusable
                   key={option.id}
                   className="Controller1_Card Controller1_TypeOption"
-                  onActivate={() => !busy && create(option)}
-                  onClick={() => !busy && create(option)}
+                  onActivate={activate}
+                  onClick={activate}
                 >
                   <div className="Controller1_CardTitle">
                     <span>{option.label}</span>
@@ -1241,7 +1272,8 @@ function ControlTypePickerModal({
                   </div>
                   <div className="Controller1_Subtitle">{option.description}</div>
                 </Focusable>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
