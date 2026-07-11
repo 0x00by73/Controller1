@@ -84,6 +84,7 @@ class ControllerService:
         self.component_logger = DiagnosticLogger(logger, self._debug)
         self.discovery = DiscoverySession(self._event_name)
         self.bind_assist_control_id: str | None = None
+        self.reconnect_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         self._debug("service_start")
@@ -879,6 +880,30 @@ class ControllerService:
         self.discovery.stop()
         if self.calibration_active:
             self._schedule_calibration_persist_now()
+        self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        if not self.devices or not self.devices.selected_id:
+            return
+        if self.reconnect_task and not self.reconnect_task.done():
+            return
+        self.reconnect_task = asyncio.get_running_loop().create_task(
+            self._reconnect_selected(),
+            name="controller1-reconnect",
+        )
+
+    async def _reconnect_selected(self) -> None:
+        if not self.devices or not self.devices.selected_id:
+            return
+        for attempt in range(12):
+            if self.devices.active_device:
+                return
+            await self.devices.scan()
+            if self.devices.active_device:
+                self._debug("physical_reconnect", attempt=attempt + 1)
+                self._schedule_status_changed()
+                return
+            await asyncio.sleep(min(0.5 * (attempt + 1), 3.0))
 
     def _on_connection_changed(self) -> None:
         self._schedule_status_changed()

@@ -230,9 +230,10 @@ class BindAssistTests(unittest.TestCase):
                 ("gamepadButton", "BTN_SOUTH", True),
                 ("gamepadButton", "BTN_SOUTH", False),
                 ("gamepadButton", "BTN_EAST", True),
-                ("gamepadButton", "BTN_EAST", False),
             ],
         )
+        engine.stop_bind_assist()
+        self.assertEqual(outputs.events[-1], ("gamepadButton", "BTN_EAST", False))
 
 
 if __name__ == "__main__":

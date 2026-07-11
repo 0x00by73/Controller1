@@ -91,7 +91,7 @@ class MappingEngineTests(unittest.TestCase):
             [("key", "KEY_ESC", True), ("key", "KEY_ESC", False)],
         )
 
-    def test_unbound_standard_button_and_axis_pass_through(self):
+    def test_unbound_axes_pass_through(self):
         axis = InputRef(3, 0, "ABS_X")
         self.engine.set_profile(
             Profile(
@@ -107,9 +107,7 @@ class MappingEngineTests(unittest.TestCase):
         self.assertEqual(
             self.outputs.events,
             [
-                ("gamepadButton", "BTN_SOUTH", True),
                 ("gamepadAxis", "ABS_X", 0.5),
-                ("gamepadButton", "BTN_SOUTH", False),
             ],
         )
 
@@ -175,18 +173,10 @@ class MappingEngineTests(unittest.TestCase):
             ],
         )
 
-    def test_release_all_releases_passthrough_button(self):
+    def test_unmapped_buttons_do_not_passthrough(self):
         self.engine.process(1, 304, 1)
-
-        self.engine.release_all()
-
-        self.assertEqual(
-            self.outputs.events,
-            [
-                ("gamepadButton", "BTN_SOUTH", True),
-                ("gamepadButton", "BTN_SOUTH", False),
-            ],
-        )
+        self.engine.process(1, 304, 0)
+        self.assertEqual(self.outputs.events, [])
 
     def test_chord_requires_all_inputs(self):
         modifier = InputRef(1, 314, "BTN_SELECT")
@@ -391,7 +381,7 @@ class MappingEngineTests(unittest.TestCase):
         self.assertTrue(any(item["outputCode"] == "BTN_TRIGGER_HAPPY5" and item["emitted"] for item in states))
 
 
-    def test_bind_assist_pulses_each_exclusive_position(self):
+    def test_bind_assist_holds_each_exclusive_position(self):
         outputs = FakeOutputs()
         engine = MappingEngine(outputs)
         pinkie = InputRef(1, 293, "BTN_PINKIE")
@@ -416,7 +406,9 @@ class MappingEngineTests(unittest.TestCase):
         engine.process(1, 293, 1)
         engine.process(1, 294, 0)
         engine.process(1, 295, 0)
+        engine.process(1, 293, 0)
         engine.process(1, 294, 1)
+        engine.process(1, 294, 0)
         engine.process(1, 295, 1)
 
         self.assertEqual(
@@ -427,8 +419,12 @@ class MappingEngineTests(unittest.TestCase):
                 ("gamepadButton", "BTN_TRIGGER_HAPPY2", True),
                 ("gamepadButton", "BTN_TRIGGER_HAPPY2", False),
                 ("gamepadButton", "BTN_TRIGGER_HAPPY3", True),
-                ("gamepadButton", "BTN_TRIGGER_HAPPY3", False),
             ],
+        )
+        engine.stop_bind_assist()
+        self.assertEqual(
+            outputs.events[-1],
+            ("gamepadButton", "BTN_TRIGGER_HAPPY3", False),
         )
 
     def test_overlapping_switch_positions_resolve_to_highest(self):

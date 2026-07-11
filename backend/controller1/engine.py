@@ -18,7 +18,7 @@ class MappingEngine:
         self.output_counts: dict[str, int] = {}
         self.active_passthrough: dict[str, tuple[str, str]] = {}
         self.bind_assist_control_id: str | None = None
-        self.bind_assist_last_binding_id: str | None = None
+        self.bind_assist_active_binding_id: str | None = None
         self.pipeline: deque[dict[str, Any]] = deque(maxlen=100)
 
     def set_profile(self, profile: Profile) -> None:
@@ -30,11 +30,12 @@ class MappingEngine:
     def start_bind_assist(self, logical_control_id: str) -> None:
         self.release_all()
         self.bind_assist_control_id = logical_control_id
-        self.bind_assist_last_binding_id = None
+        self.bind_assist_active_binding_id = None
 
     def stop_bind_assist(self) -> None:
+        self._release_bind_assist_output()
         self.bind_assist_control_id = None
-        self.bind_assist_last_binding_id = None
+        self.bind_assist_active_binding_id = None
 
     def set_default_calibrations(
         self, calibrations: dict[str, AxisCalibration]
@@ -266,13 +267,9 @@ class MappingEngine:
                 self._log(f"Failed to pass through {output_code}: {error}")
             return
 
-        pressed = value != 0
-        if pressed and previous is None:
-            self.active_passthrough[changed.key] = control
-            self._increment_output(output_type, output_code)
-        elif not pressed and previous is not None:
-            self.active_passthrough.pop(changed.key, None)
-            self._decrement_output(*previous)
+        # Unmapped buttons stay silent. Passthrough is axis-only so switches like
+        # SD cannot accidentally emit Guide/Start and hijack Steam desktop input.
+        return
 
     def _passthrough_reserved(
         self, input_ref: InputRef, control: tuple[str, str]
@@ -311,12 +308,27 @@ class MappingEngine:
         if changed.key not in source_keys:
             return
         winner = self._winning_logical_binding(control_id)
-        if winner is None or winner.id == self.bind_assist_last_binding_id:
+        if winner is None:
+            self._release_bind_assist_output()
             return
+        if winner.id == self.bind_assist_active_binding_id:
+            return
+        self._release_bind_assist_output()
         self._activate_action(winner.action)
-        self._deactivate_action(winner.action)
-        self._record_pipeline(changed, winner, value=1, pulse=True)
-        self.bind_assist_last_binding_id = winner.id
+        self.bind_assist_active_binding_id = winner.id
+        self._record_pipeline(changed, winner, value=1, pulse=False)
+
+    def _release_bind_assist_output(self) -> None:
+        active_id = self.bind_assist_active_binding_id
+        if active_id is None:
+            return
+        binding = next(
+            (item for item in self.profile.bindings if item.id == active_id),
+            None,
+        )
+        if binding is not None:
+            self._deactivate_action(binding.action)
+        self.bind_assist_active_binding_id = None
 
     def _record_pipeline(
         self,

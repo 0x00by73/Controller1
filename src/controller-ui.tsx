@@ -1149,7 +1149,7 @@ function GroupedControlModal({
           </section>
           {bindActive && (
             <div className="Controller1_BindBanner">
-              Move the switch through each position one at a time. Each new position sends a distinct pulse to the game.
+              Move the switch through each position one at a time. Bind assist holds the virtual button while you stay in that position.
             </div>
           )}
         </div>

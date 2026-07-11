@@ -9,8 +9,8 @@ stable virtual Xbox-style controller plus a virtual keyboard/mouse.
 Controller1 is intended to be the mapping layer:
 
 1. Enable Controller1 and select the physical controller.
-   Unmapped standard Xbox-style buttons and axes pass through automatically;
-   an explicit mapping overrides passthrough for its source and output.
+   Unmapped axes pass through automatically; buttons require an explicit mapping.
+   An explicit mapping overrides passthrough for its source and output.
 2. In each game's **Properties → Controller**, choose **Disable Steam Input**
    if the game supports Xbox controllers directly.
 3. If a game requires Steam Input, use a plain **Gamepad** template with no
