@@ -367,6 +367,22 @@ class ControllerService:
             control.action is None and control.kind == "analog"
         ) or any(position.action is None for position in control.positions):
             control = allocate_logical_control(profile, control)
+        claimed_keys = {source.key for source in control.sources}
+        for position in control.positions:
+            for condition in position.conditions:
+                claimed_keys.add(condition.input.key)
+        profile.bindings = [
+            binding
+            for binding in profile.bindings
+            if not any(
+                condition.input.key in claimed_keys
+                for condition in binding.conditions
+            )
+            and not (
+                binding.action.source is not None
+                and binding.action.source.key in claimed_keys
+            )
+        ]
         profile.logical_controls.append(control)
         self._save_and_reload(profile)
         return control.to_dict()
@@ -435,6 +451,13 @@ class ControllerService:
 
     async def get_pipeline_snapshot(self) -> list[dict[str, Any]]:
         return list(getattr(self.engine, "pipeline", [])) if self.engine else []
+
+    async def get_logical_control_states(
+        self, control_id: str
+    ) -> list[dict[str, Any]]:
+        if not self.engine or not hasattr(self.engine, "logical_control_states"):
+            return []
+        return self.engine.logical_control_states(control_id)
 
     async def start_learning(self) -> None:
         if not self.devices or not self.devices.active_device:

@@ -329,6 +329,64 @@ class MappingEngineTests(unittest.TestCase):
             [("gamepadAxis", "ABS_X", 1.0), ("gamepadAxis", "ABS_X", 0.0)],
         )
 
+    def test_logical_switch_positions_emit_distinct_outputs(self):
+        from controller1.logical_controls import compile_profile
+        from controller1.models import LogicalControl, LogicalPosition
+
+        axis = InputRef(3, 16, "ABS_HAT0X")
+        control = LogicalControl(
+            id="gear",
+            name="Gear",
+            kind="switch3",
+            sources=[axis],
+            positions=[
+                LogicalPosition(
+                    "low",
+                    "Low",
+                    [Predicate(axis, "axisRange", low=-1, high=-0.55)],
+                    Action("gamepadButton", code="BTN_TRIGGER_HAPPY3"),
+                ),
+                LogicalPosition(
+                    "center",
+                    "Center",
+                    [Predicate(axis, "axisRange", low=-0.45, high=0.45)],
+                    Action("gamepadButton", code="BTN_TRIGGER_HAPPY4"),
+                ),
+                LogicalPosition(
+                    "high",
+                    "High",
+                    [Predicate(axis, "axisRange", low=0.55, high=1)],
+                    Action("gamepadButton", code="BTN_TRIGGER_HAPPY5"),
+                ),
+            ],
+            confidence=1,
+            confirmed=True,
+        )
+        profile = Profile(
+            name="test",
+            calibrations={axis.key: AxisCalibration(-1, 0, 1, deadzone=0)},
+            logical_controls=[control],
+        )
+        self.engine.set_profile(compile_profile(profile))
+
+        self.engine.process(3, 16, -1)
+        self.engine.process(3, 16, 0)
+        self.engine.process(3, 16, 1)
+
+        self.assertEqual(
+            self.outputs.events,
+            [
+                ("gamepadButton", "BTN_TRIGGER_HAPPY3", True),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY3", False),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY4", True),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY4", False),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY5", True),
+            ],
+        )
+        states = self.engine.logical_control_states("gear")
+        self.assertEqual(len(states), 3)
+        self.assertTrue(any(item["outputCode"] == "BTN_TRIGGER_HAPPY5" and item["emitted"] for item in states))
+
 
 if __name__ == "__main__":
     unittest.main()

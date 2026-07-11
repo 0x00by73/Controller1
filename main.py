@@ -125,6 +125,11 @@ class Plugin:
     async def get_pipeline_snapshot(self) -> list[dict[str, Any]]:
         return await self._require_service().get_pipeline_snapshot()
 
+    async def get_logical_control_states(
+        self, control_id: str
+    ) -> list[dict[str, Any]]:
+        return await self._require_service().get_logical_control_states(control_id)
+
     async def start_learning(self) -> None:
         await self._require_service().start_learning()
 

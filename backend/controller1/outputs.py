@@ -132,29 +132,97 @@ class VirtualOutputs:
             self.close()
             raise
 
+    def _friendly_button_name(self, code: str) -> str:
+        standard = {
+            "BTN_SOUTH": "A / South",
+            "BTN_EAST": "B / East",
+            "BTN_NORTH": "Y / North",
+            "BTN_WEST": "X / West",
+            "BTN_TL": "Left bumper",
+            "BTN_TR": "Right bumper",
+            "BTN_TL2": "Left trigger click",
+            "BTN_TR2": "Right trigger click",
+            "BTN_SELECT": "View / Select",
+            "BTN_START": "Menu / Start",
+            "BTN_MODE": "Guide",
+            "BTN_THUMBL": "Left stick click",
+            "BTN_THUMBR": "Right stick click",
+        }
+        if code in standard:
+            return standard[code]
+        if code.startswith("BTN_TRIGGER_HAPPY"):
+            try:
+                index = int(code.removeprefix("BTN_TRIGGER_HAPPY"))
+            except ValueError:
+                return code
+            return f"Extra button {index}"
+        return code
+
+    def _friendly_axis_name(self, code: str) -> str:
+        standard = {
+            "ABS_X": "Left stick X",
+            "ABS_Y": "Left stick Y",
+            "ABS_RX": "Right stick X",
+            "ABS_RY": "Right stick Y",
+            "ABS_Z": "Left trigger",
+            "ABS_RZ": "Right trigger",
+            "ABS_HAT0X": "D-pad X",
+            "ABS_HAT0Y": "D-pad Y",
+        }
+        return standard.get(code, code)
+
+    def _friendly_key_name(self, code: str) -> str:
+        return code.removeprefix("KEY_").replace("_", " ").title()
+
     def catalog(self) -> dict[str, list[dict[str, str]]]:
-        def entries(names: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
-            return [{"code": name, "name": name} for name in names]
+        def button_entries(names: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
+            return [
+                {
+                    "code": name,
+                    "name": self._friendly_button_name(name),
+                    "group": (
+                        "standard"
+                        if name in self.GAMEPAD_BUTTON_NAMES
+                        else "extended"
+                    ),
+                }
+                for name in names
+                if self._has_code(name)
+            ]
+
+        def axis_entries(names: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
+            return [
+                {"code": name, "name": self._friendly_axis_name(name)}
+                for name in names
+                if self._has_code(name)
+            ]
 
         keyboard_names = sorted(self._keyboard_codes())
         return {
-            "gamepadButton": entries(
+            "gamepadButton": button_entries(
                 [
                     name
                     for name in self.GAMEPAD_BUTTON_NAMES + self.EXTENDED_BUTTON_NAMES
                     if self._has_code(name)
                 ]
             ),
-            "gamepadAxis": entries(
+            "gamepadAxis": axis_entries(
                 [name for name in self.GAMEPAD_AXIS_NAMES if self._has_code(name)]
             ),
-            "key": entries(keyboard_names),
-            "mouseButton": entries(
-                [name for name in self.MOUSE_BUTTON_NAMES if self._has_code(name)]
-            ),
-            "mouseMove": entries(
-                [name for name in self.MOUSE_MOVE_NAMES if self._has_code(name)]
-            ),
+            "key": [
+                {"code": name, "name": self._friendly_key_name(name)}
+                for name in keyboard_names
+            ],
+            "mouseButton": [
+                {"code": name, "name": name.removeprefix("BTN_").replace("_", " ").title()}
+                for name in self.MOUSE_BUTTON_NAMES
+                if self._has_code(name)
+            ],
+            "mouseMove": [
+                {"code": name, "name": name.removeprefix("REL_")}
+                for name in self.MOUSE_MOVE_NAMES
+                if self._has_code(name)
+            ],
         }
 
     def _has_code(self, name: str) -> bool:

@@ -142,6 +142,16 @@ export type InputSnapshot = {
 export type OutputOption = {
   code: string;
   name?: string;
+  group?: string;
+};
+
+export type LogicalControlState = {
+  positionId: string;
+  label: string;
+  active: boolean;
+  outputType: Action["type"];
+  outputCode: string;
+  emitted: boolean;
 };
 
 export type OutputCatalog = {
@@ -199,3 +209,7 @@ export const startBindAssist = callable<
 >("start_bind_assist");
 export const stopBindAssist = callable<[], void>("stop_bind_assist");
 export const getPipelineSnapshot = callable<[], PipelineEntry[]>("get_pipeline_snapshot");
+export const getLogicalControlStates = callable<
+  [controlId: string],
+  LogicalControlState[]
+>("get_logical_control_states");

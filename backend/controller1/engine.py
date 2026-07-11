@@ -94,12 +94,70 @@ class MappingEngine:
                 continue
 
             if should_be_active and not was_active:
+                if binding.logical_control_id is not None:
+                    self._deactivate_other_logical_positions(binding)
                 self._activate_action(binding.action)
                 self.active_bindings.add(binding.id)
                 self._record_pipeline(changed, binding, value=value)
             elif was_active and not should_be_active:
                 self._deactivate_action(binding.action)
                 self.active_bindings.discard(binding.id)
+
+    def _deactivate_other_logical_positions(self, binding: Binding) -> None:
+        if binding.logical_control_id is None:
+            return
+        for other in self.profile.bindings:
+            if (
+                other.logical_control_id == binding.logical_control_id
+                and other.id != binding.id
+                and other.id in self.active_bindings
+                and other.action.type not in ("gamepadAxis", "mouseMove", "layer")
+            ):
+                self._deactivate_action(other.action)
+                self.active_bindings.discard(other.id)
+
+    def logical_control_states(self, control_id: str) -> list[dict[str, Any]]:
+        logical = next(
+            (item for item in self.profile.logical_controls if item.id == control_id),
+            None,
+        )
+        if not logical:
+            return []
+        if logical.kind == "analog" and logical.action is not None:
+            binding_id = f"logical:{control_id}:analog"
+            active = binding_id in self.active_continuous
+            return [
+                {
+                    "positionId": "analog",
+                    "label": logical.name,
+                    "active": active,
+                    "outputType": logical.action.type,
+                    "outputCode": logical.action.code,
+                    "emitted": active,
+                }
+            ]
+        states: list[dict[str, Any]] = []
+        for position in logical.positions:
+            binding_id = f"logical:{control_id}:position:{position.id}"
+            binding = next(
+                (item for item in self.profile.bindings if item.id == binding_id),
+                None,
+            )
+            if binding is None or binding.action.type in ("gamepadAxis", "mouseMove", "layer"):
+                continue
+            matches = self._conditions_match(binding)
+            emitted = binding.id in self.active_bindings and matches
+            states.append(
+                {
+                    "positionId": position.id,
+                    "label": position.label,
+                    "active": matches,
+                    "outputType": binding.action.type,
+                    "outputCode": binding.action.code,
+                    "emitted": emitted,
+                }
+            )
+        return states
 
     def _conditions_match(self, binding: Binding) -> bool:
         if not binding.conditions:
@@ -199,6 +257,7 @@ class MappingEngine:
         for binding in relevant:
             if binding.id not in entered:
                 continue
+            self._deactivate_other_logical_positions(binding)
             self._activate_action(binding.action)
             self._deactivate_action(binding.action)
             self._record_pipeline(changed, binding, value=1, pulse=True)

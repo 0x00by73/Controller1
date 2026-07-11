@@ -35,10 +35,10 @@ import {
   InputRef,
   InputSnapshot,
   LogicalControl,
+  LogicalControlState,
   LogicalPosition,
   OutputCatalog,
   OutputOption,
-  PipelineEntry,
   Profile,
   Status,
   beginCalibration,
@@ -47,8 +47,8 @@ import {
   deleteLogicalControl,
   finishCalibration,
   getDebugReport,
+  getLogicalControlStates,
   getOutputCatalog,
-  getPipelineSnapshot,
   getStatus,
   refreshDevices,
   saveBinding,
@@ -155,14 +155,36 @@ function actionLabel(action?: Action): string {
   return `${ACTION_LABELS[action.type]} · ${STANDARD_INPUT_NAMES[output] ?? output}`;
 }
 
-function modeNote(mode: Profile["outputMode"]): string {
-  if (mode === "extended") {
-    return "Extended exposes more virtual controls; games with strict standard-pad support may ignore extras.";
-  }
-  if (mode === "hybrid") {
-    return "Hybrid preserves standard controls and falls back to extended outputs when capacity is reached.";
-  }
-  return "Maximum compatibility. Extra controls fall back to available standard outputs.";
+function virtualOutputLabel(
+  code: string,
+  type: Action["type"],
+  catalog: OutputCatalog | undefined,
+): string {
+  const pool = catalog?.[type === "gamepadAxis" ? "gamepadAxis" : type === "key" ? "key" : "gamepadButton"] ?? [];
+  const match = pool.find((item) => item.code === code);
+  if (match?.name && match.name !== match.code) return match.name;
+  return STANDARD_INPUT_NAMES[code] ?? code;
+}
+
+function groupedGamepadOutputs(catalog: OutputCatalog | undefined) {
+  const outputs = outputOptions(catalog, "gamepadButton");
+  return {
+    standard: outputs.filter((item) => !item.code.startsWith("BTN_TRIGGER_HAPPY")),
+    extended: outputs.filter((item) => item.code.startsWith("BTN_TRIGGER_HAPPY")),
+  };
+}
+
+function outputPickerOptions(
+  catalog: OutputCatalog | undefined,
+  type: "gamepadButton" | "key",
+) {
+  const outputs = outputOptions(catalog, type);
+  return outputs.map((option) => ({
+    data: option.code,
+    label: option.name && option.name !== option.code
+      ? `${option.name} (${option.code})`
+      : option.code,
+  }));
 }
 
 type ControlTypeOption = {
@@ -699,75 +721,181 @@ const ButtonControl = memo(function ButtonControl({
   );
 });
 
-function ControlPipelinePreview({
-  controlId,
+function ControlLivePreview({
+  control,
+  catalog,
   connected,
 }: {
-  controlId: string;
+  control: LogicalControl;
+  catalog: OutputCatalog | undefined;
   connected: boolean;
 }) {
-  const [entries, setEntries] = useState<PipelineEntry[]>([]);
+  const [states, setStates] = useState<LogicalControlState[]>([]);
 
   const refresh = useCallback(async () => {
     try {
-      const snapshot = await getPipelineSnapshot();
-      setEntries(snapshot.filter((entry) => entry.logicalControlId === controlId));
+      setStates(await getLogicalControlStates(control.id));
     } catch {
-      setEntries([]);
+      setStates([]);
     }
-  }, [controlId]);
+  }, [control.id]);
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 500);
+    const timer = window.setInterval(() => void refresh(), 250);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
   if (!connected) {
     return <div className="Controller1_Empty Controller1_Empty--compact">Connect a controller to preview output.</div>;
   }
-  if (entries.length === 0) {
-    return (
-      <div className="Controller1_Empty Controller1_Empty--compact">
-        Move this control to see physical input, position, and virtual output.
-      </div>
-    );
-  }
+
+  const rows = control.kind === "analog"
+    ? [{
+        id: "analog",
+        label: control.name,
+        action: control.action,
+      }]
+    : control.positions.map((position) => ({
+        id: position.id,
+        label: position.label,
+        action: position.action,
+      }));
 
   return (
-    <div className="Controller1_Stack" aria-live="polite">
-      {entries.map((entry, index) => {
-        const physical = entry.physical
-          ? friendlyInputName(entry.physical)
-          : "No physical event";
-        const output = entry.virtual
-          ? `${entry.virtual.kind} · ${STANDARD_INPUT_NAMES[entry.virtual.code] ?? entry.virtual.code} · ${entry.virtual.value}`
-          : "No output";
+    <div className="Controller1_PreviewTable" aria-live="polite">
+      {rows.map((row) => {
+        const live = states.find((item) => item.positionId === row.id);
+        const outputCode = live?.outputCode ?? row.action?.code ?? "—";
+        const outputType = live?.outputType ?? row.action?.type ?? "gamepadButton";
+        const active = live?.active ?? false;
+        const emitted = live?.emitted ?? false;
         return (
           <div
-            className={`Controller1_PipelineRow ${entry.virtual?.emitted ? "Controller1_PipelineRow--emitted" : ""}`}
-            key={`${entry.logicalControlId}:${entry.position ?? ""}:${index}`}
+            className={[
+              "Controller1_PreviewRow",
+              active ? "Controller1_PreviewRow--active" : "",
+              emitted ? "Controller1_PreviewRow--emitted" : "",
+            ].join(" ")}
+            key={row.id}
           >
-            <div className="Controller1_PipelineStage">
-              <span>Physical</span>
-              <strong>{physical}</strong>
-              {entry.physical && <small>value {entry.physical.value ?? "—"}</small>}
-            </div>
-            <span className="Controller1_PipelineArrow">→</span>
-            <div className="Controller1_PipelineStage">
+            <div className="Controller1_PreviewCell">
               <span>Position</span>
-              <strong>{entry.name}</strong>
-              <small>{entry.position || "Between positions"}</small>
+              <strong>{row.label}</strong>
             </div>
             <span className="Controller1_PipelineArrow">→</span>
-            <div className="Controller1_PipelineStage">
-              <span>Virtual</span>
-              <strong>{output}</strong>
-              <small>{entry.virtual?.emitted ? "Emitted" : "Not emitted"}</small>
+            <div className="Controller1_PreviewCell">
+              <span>Output</span>
+              <strong>{virtualOutputLabel(outputCode, outputType, catalog)}</strong>
+              <small>{outputCode}</small>
+            </div>
+            <div className="Controller1_PreviewStatus">
+              {emitted ? "Emitting" : active ? "Matched" : "Idle"}
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function ConfiguredControlsSection({
+  controls,
+  onEdit,
+  onCombine,
+}: {
+  controls: LogicalControl[];
+  onEdit: (control: LogicalControl) => void;
+  onCombine: () => void;
+}) {
+  return (
+    <section className="Controller1_Section Controller1_Section--configured">
+      <div className="Controller1_SectionHeader">
+        <div>
+          <h2>Your controls</h2>
+          <p>Combined switches and grouped inputs. Tap a card to edit mappings and preview.</p>
+        </div>
+        <DialogButton onClick={onCombine}>
+          <FaHandPointer /> Combine inputs
+        </DialogButton>
+      </div>
+      {controls.length === 0 ? (
+        <div className="Controller1_Empty Controller1_Empty--compact">
+          No combined controls yet. Tap Combine inputs, select related hardware inputs below, then choose a control type.
+        </div>
+      ) : (
+        <div className="Controller1_ControlInventory">
+          {controls.map((control) => (
+            <Focusable
+              key={control.id}
+              className="Controller1_InventoryCard"
+              onActivate={() => onEdit(control)}
+              onClick={() => onEdit(control)}
+              onOKActionDescription="Edit control"
+            >
+              <div className="Controller1_CardTitle">
+                <span>{control.name}</span>
+                <span className="Controller1_Badge">{control.kind}</span>
+              </div>
+              <div className="Controller1_InventorySummary">
+                {control.kind === "analog" ? (
+                  <span>{actionLabel(control.action)}</span>
+                ) : (
+                  control.positions.map((position) => (
+                    <span className="Controller1_InventoryPosition" key={position.id}>
+                      <strong>{position.label}</strong>
+                      <span>{actionLabel(position.action)}</span>
+                    </span>
+                  ))
+                )}
+              </div>
+            </Focusable>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SelectionDock({
+  selected,
+  canCreate,
+  onClear,
+  onCancel,
+  onCreate,
+}: {
+  selected: InputRef[];
+  canCreate: boolean;
+  onClear: () => void;
+  onCancel: () => void;
+  onCreate: () => void;
+}) {
+  return (
+    <div className="Controller1_SelectionDock">
+      <div className="Controller1_SelectionDockHeader">
+        <strong>Selecting inputs</strong>
+        <span className="Controller1_Badge Controller1_Badge--warn">{selected.length} / 3</span>
+      </div>
+      <p className="Controller1_Subtitle">
+        Tap hardware inputs in the grid. When ready, create a switch or other control type.
+      </p>
+      <div className="Controller1_Chips Controller1_Chips--dock">
+        {selected.length === 0 ? (
+          <span className="Controller1_Subtitle">Nothing selected yet.</span>
+        ) : (
+          selected.map((input) => (
+            <span className="Controller1_Chip Controller1_Chip--dock" key={eventKey(input)}>
+              {input.eventType === 3 ? <FaSlidersH /> : <FaGamepad />}
+              {friendlyInputName(input)}
+            </span>
+          ))
+        )}
+      </div>
+      <div className="Controller1_Actions Controller1_Actions--dock">
+        <DialogButton onClick={onCancel}>Cancel</DialogButton>
+        <DialogButton disabled={selected.length === 0} onClick={onClear}>Clear</DialogButton>
+        <DialogButton disabled={!canCreate} onClick={onCreate}>Create control</DialogButton>
+      </div>
     </div>
   );
 }
@@ -798,8 +926,7 @@ function GroupedControlModal({
   });
   const [saving, setSaving] = useState(false);
   const bindActive = status.bindAssisting && status.bindAssistControlId === control.id;
-  const gamepadOutputs = outputOptions(catalog, "gamepadButton");
-  const axisOutputs = outputOptions(catalog, "gamepadAxis");
+  const gamepadGroups = groupedGamepadOutputs(catalog);
 
   useEffect(() => {
     setDraft({
@@ -903,30 +1030,50 @@ function GroupedControlModal({
               <div className="Controller1_FormHeading">
                 <div>
                   <h3>Position mappings</h3>
-                  <p>Name each position and choose what it emits.</p>
+                  <p>
+                    Virtual gamepad buttons are Linux uinput codes exposed to games.
+                    Use them for in-game binding. Keyboard keys work for menus and desktop shortcuts.
+                  </p>
                 </div>
               </div>
               <div className="Controller1_Positions">
                 {draft.positions.map((position, index) => {
                   const action = position.action;
-                  const outputType = action?.type ?? "gamepadButton";
-                  const outputs = outputType === "gamepadAxis" ? axisOutputs : gamepadOutputs;
-                  const outputCode = action?.code ?? outputs[0]?.code ?? "";
+                  const outputType = action?.type === "key" ? "key" : "gamepadButton";
+                  const outputCode = action?.code ?? (
+                    outputType === "key"
+                      ? outputOptions(catalog, "key")[0]?.code ?? "KEY_A"
+                      : gamepadGroups.standard[0]?.code ?? "BTN_SOUTH"
+                  );
+                  const options = outputPickerOptions(catalog, outputType);
                   return (
-                    <div className="Controller1_PositionRow" key={position.id}>
+                    <div className="Controller1_PositionEditor" key={position.id}>
                       <TextField
                         label={`Position ${index + 1}`}
                         value={position.label}
                         onChange={(event) => updatePosition(index, { label: event.currentTarget.value })}
                       />
                       <DropdownItem
+                        label="Output type"
+                        rgOptions={[
+                          { data: "gamepadButton", label: "Gamepad button (for games)" },
+                          { data: "key", label: "Keyboard key (menus/desktop)" },
+                        ]}
+                        selectedOption={outputType}
+                        onChange={(option) => {
+                          const nextType = option.data as "gamepadButton" | "key";
+                          const nextPool = outputPickerOptions(catalog, nextType);
+                          updatePosition(index, {
+                            action: {
+                              type: nextType,
+                              code: nextPool[0]?.data ? String(nextPool[0].data) : outputCode,
+                            },
+                          });
+                        }}
+                      />
+                      <DropdownItem
                         label="Virtual output"
-                        rgOptions={outputs.map((option) => ({
-                          data: option.code,
-                          label: option.name && option.name !== option.code
-                            ? `${option.name} · ${option.code}`
-                            : option.code,
-                        }))}
+                        rgOptions={options}
                         selectedOption={outputCode}
                         onChange={(option) => updatePosition(index, {
                           action: {
@@ -939,16 +1086,22 @@ function GroupedControlModal({
                   );
                 })}
               </div>
+              {gamepadGroups.extended.length > 0 && (
+                <div className="Controller1_Subtitle">
+                  Extra buttons (BTN_TRIGGER_HAPPY*) are additional virtual gamepad buttons beyond the standard 14.
+                  Games that only read a standard pad may ignore them — try standard face buttons first if binding fails.
+                </div>
+              )}
             </section>
           )}
           <section className="Controller1_Assigned">
             <div className="Controller1_FormHeading">
               <div>
                 <h3>Live preview</h3>
-                <p>Physical input → position → virtual output.</p>
+                <p>One row per position. Move the control to see which output is active.</p>
               </div>
             </div>
-            <ControlPipelinePreview controlId={control.id} connected={status.connected} />
+            <ControlLivePreview control={draft} catalog={catalog} connected={status.connected} />
           </section>
           {bindActive && (
             <div className="Controller1_BindBanner">
@@ -1178,11 +1331,10 @@ function CalibrationPage({
     }
   };
 
-  const toggleSelectMode = () => {
-    setSelectMode((active) => {
-      if (active) setSelectedInputs([]);
-      return !active;
-    });
+
+  const beginCombine = () => {
+    setSelectedInputs([]);
+    setSelectMode(true);
   };
 
   const toggleSelectedInput = useCallback((input: InputRef) => {
@@ -1251,127 +1403,115 @@ function CalibrationPage({
   }
 
   return (
-    <Focusable className="Controller1_Content" flow-children="column">
+    <Focusable className={`Controller1_Content ${selectMode ? "Controller1_Content--selecting" : ""}`} flow-children="column">
       <PageHeader
         title="Controls"
         description={selectMode
-          ? "Tap up to 3 inputs, then create a switch or other control type."
+          ? "Selection mode — tap hardware inputs in the grid below."
           : status.calibrating
-            ? "Move every axis through its full travel and press every available button."
-            : "Tap a control to configure it. Use Select to combine inputs into switches."}
+            ? "Calibration recording — exercise every axis and button."
+            : "Tap a hardware input to map it, or combine inputs into a switch."}
         badge={(
           <span className={`Controller1_Badge ${selectMode || status.calibrating ? "Controller1_Badge--warn" : "Controller1_Badge--good"}`}>
             {selectMode
-              ? <><FaHandPointer /> {selectedInputs.length} selected</>
+              ? <><FaHandPointer /> Selecting</>
               : status.calibrating
-                ? <><FaBolt /> Recording</>
-                : <><FaCheck /> {logicalControls.length} groups</>}
+                ? <><FaBolt /> Calibrating</>
+                : <><FaCheck /> Ready</>}
           </span>
         )}
       />
 
-      <div className="Controller1_Card">
-        <div className="Controller1_CardTitle">
-          <span>Output strategy</span>
-          <span className="Controller1_Badge">{profile.outputMode}</span>
-        </div>
-        <div className="Controller1_Subtitle">{modeNote(profile.outputMode)}</div>
-      </div>
+      <ConfiguredControlsSection
+        controls={logicalControls}
+        onEdit={(control) => showGroupedControlModal(control, profile.id, reload)}
+        onCombine={beginCombine}
+      />
 
-      {selectMode && (
-        <div className="Controller1_Card Controller1_SelectBanner">
-          <div className="Controller1_CardTitle">
-            <span>Selection mode</span>
-            <span className="Controller1_Badge">{selectedInputs.length} / 3</span>
+      <section className="Controller1_Section">
+        <div className="Controller1_SectionHeader">
+          <div>
+            <h2>Hardware inputs</h2>
+            <p>
+              Live view of your controller.
+              {selectMode ? " Selected chips appear in the dock below." : " Grouped inputs show a badge."}
+            </p>
           </div>
-          <div className="Controller1_Subtitle">
-            Pick inputs that belong to the same physical control, then choose a control type.
-          </div>
-          {selectedInputs.length > 0 && (
-            <div className="Controller1_Chips">
-              {selectedInputs.map((input) => (
-                <span className="Controller1_Chip" key={eventKey(input)}>
-                  {friendlyInputName(input)}
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="Controller1_Actions">
-            <DialogButton onClick={() => setSelectedInputs([])}>Clear</DialogButton>
-            <DialogButton
-              disabled={selectedInputs.length === 0 || typeOptions.length === 0}
-              onClick={createFromSelection}
-            >
-              Create control
+          <div className="Controller1_Actions Controller1_Actions--inline">
+            <DialogButton onClick={status.calibrating ? finish : start}>
+              {status.calibrating ? "Finish calibration" : `Calibrate (${progress}%)`}
             </DialogButton>
           </div>
         </div>
+
+        {status.calibrating && (
+          <div className="Controller1_Card Controller1_Card--compact">
+            <div className="Controller1_Progress">
+              <div className="Controller1_ProgressFill" style={{ width: `${progress}%` }} />
+            </div>
+            <div className="Controller1_Subtitle">{complete} of {total} inputs exercised</div>
+          </div>
+        )}
+
+        <PageHeader
+          title={`Axes · ${device.axes.length}`}
+          description="White marker is live input; blue is observed range."
+        />
+        <div className="Controller1_Grid Controller1_Grid--three">
+          {device.axes.map((axis) => {
+            const input = { eventType: 3, code: axis.code, name: axis.name };
+            return (
+              <AxisCard
+                key={axis.code}
+                axis={axis}
+                current={snapshot.values[`3:${axis.code}`] ?? axis.value ?? profile.calibrations[`3:${axis.code}`]?.center ?? 0}
+                observedMin={axisRanges[`3:${axis.code}`]?.min}
+                observedMax={axisRanges[`3:${axis.code}`]?.max}
+                stored={profile.calibrations[`3:${axis.code}`]}
+                onSelect={activateControl}
+                selected={isSelected(input)}
+                groupLabel={groupLabelFor(input)}
+                selectMode={selectMode}
+              />
+            );
+          })}
+        </div>
+
+        <PageHeader
+          title={`Buttons · ${device.buttons.length}`}
+          description="Blue = pressed now. Green = seen during calibration."
+        />
+        <div className="Controller1_ButtonGrid">
+          {device.buttons.map((button) => {
+            const input = { eventType: 1, code: button.code, name: button.name };
+            return (
+              <ButtonControl
+                key={button.code}
+                button={button}
+                pressed={Boolean(snapshot.values[`1:${button.code}`])}
+                seen={seenButtons.has(`1:${button.code}`)}
+                onSelect={activateControl}
+                selected={isSelected(input)}
+                groupLabel={groupLabelFor(input)}
+                selectMode={selectMode}
+              />
+            );
+          })}
+        </div>
+      </section>
+
+      {selectMode && (
+        <SelectionDock
+          selected={selectedInputs}
+          canCreate={selectedInputs.length > 0 && typeOptions.length > 0}
+          onClear={() => setSelectedInputs([])}
+          onCancel={() => {
+            setSelectMode(false);
+            setSelectedInputs([]);
+          }}
+          onCreate={createFromSelection}
+        />
       )}
-
-      <div className="Controller1_Card">
-        <div className="Controller1_CardTitle">
-          <span>{complete} of {total} controls exercised</span>
-          <span>{progress}%</span>
-        </div>
-        <div className="Controller1_Progress">
-          <div className="Controller1_ProgressFill" style={{ width: `${progress}%` }} />
-        </div>
-      </div>
-
-      <PageHeader
-        title={`Axes · ${device.axes.length}`}
-        description="White marker is live input; blue is the observed range; endpoints are hardware limits."
-      />
-      <div className="Controller1_Grid Controller1_Grid--three">
-        {device.axes.map((axis) => {
-          const input = { eventType: 3, code: axis.code, name: axis.name };
-          return (
-            <AxisCard
-              key={axis.code}
-              axis={axis}
-              current={snapshot.values[`3:${axis.code}`] ?? axis.value ?? profile.calibrations[`3:${axis.code}`]?.center ?? 0}
-              observedMin={axisRanges[`3:${axis.code}`]?.min}
-              observedMax={axisRanges[`3:${axis.code}`]?.max}
-              stored={profile.calibrations[`3:${axis.code}`]}
-              onSelect={activateControl}
-              selected={isSelected(input)}
-              groupLabel={groupLabelFor(input)}
-              selectMode={selectMode}
-            />
-          );
-        })}
-      </div>
-
-      <PageHeader
-        title={`Buttons · ${device.buttons.length}`}
-        description="Blue means pressed now; green means an event was observed."
-      />
-      <div className="Controller1_ButtonGrid">
-        {device.buttons.map((button) => {
-          const input = { eventType: 1, code: button.code, name: button.name };
-          return (
-            <ButtonControl
-              key={button.code}
-              button={button}
-              pressed={Boolean(snapshot.values[`1:${button.code}`])}
-              seen={seenButtons.has(`1:${button.code}`)}
-              onSelect={activateControl}
-              selected={isSelected(input)}
-              groupLabel={groupLabelFor(input)}
-              selectMode={selectMode}
-            />
-          );
-        })}
-      </div>
-
-      <div className="Controller1_Actions">
-        <DialogButton onClick={toggleSelectMode}>
-          {selectMode ? "Done selecting" : <><FaHandPointer /> Select</>}
-        </DialogButton>
-        <DialogButton onClick={status.calibrating ? finish : start}>
-          {status.calibrating ? "Finish and save" : "Start calibration"}
-        </DialogButton>
-      </div>
     </Focusable>
   );
 }

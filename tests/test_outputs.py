@@ -94,11 +94,11 @@ class VirtualOutputsTests(unittest.TestCase):
 
         catalog = outputs.catalog()
 
-        self.assertIn({"code": "BTN_SOUTH", "name": "BTN_SOUTH"}, catalog["gamepadButton"])
-        self.assertIn({"code": "ABS_X", "name": "ABS_X"}, catalog["gamepadAxis"])
-        self.assertIn({"code": "KEY_A", "name": "KEY_A"}, catalog["key"])
-        self.assertIn({"code": "BTN_LEFT", "name": "BTN_LEFT"}, catalog["mouseButton"])
-        self.assertIn({"code": "REL_X", "name": "REL_X"}, catalog["mouseMove"])
+        self.assertIn({"code": "BTN_SOUTH", "name": "A / South", "group": "standard"}, catalog["gamepadButton"])
+        self.assertIn({"code": "ABS_X", "name": "Left stick X"}, catalog["gamepadAxis"])
+        self.assertIn({"code": "KEY_A", "name": "A"}, catalog["key"])
+        self.assertIn({"code": "BTN_LEFT", "name": "Left"}, catalog["mouseButton"])
+        self.assertIn({"code": "REL_X", "name": "X"}, catalog["mouseMove"])
         self.assertNotIn(
             {"code": "BTN_LEFT", "name": "BTN_LEFT"},
             catalog["key"],

@@ -475,6 +475,159 @@ export const controllerStyles = `
   background: var(--c1-surface);
 }
 
+.Controller1_Content--selecting {
+  padding-bottom: 168px;
+}
+
+.Controller1_Section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.Controller1_Section--configured {
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.Controller1_Actions--inline {
+  flex: none;
+}
+
+.Controller1_Card--compact {
+  padding: 10px 12px;
+}
+
+.Controller1_ControlInventory {
+  display: grid;
+  gap: 10px;
+}
+
+.Controller1_InventoryCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: var(--c1-surface);
+}
+
+.Controller1_InventorySummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.Controller1_InventoryPosition {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.Controller1_InventoryPosition strong {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.Controller1_SelectionDock {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: auto;
+  padding: 14px 16px 16px;
+  border: 1px solid rgba(229, 168, 75, 0.45);
+  border-radius: 10px 10px 0 0;
+  background: linear-gradient(180deg, rgba(18, 22, 28, 0.96), rgba(10, 12, 16, 0.98));
+  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.Controller1_SelectionDockHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.Controller1_Chips--dock {
+  min-height: 36px;
+}
+
+.Controller1_Chip--dock {
+  border-color: rgba(229, 168, 75, 0.45);
+}
+
+.Controller1_Actions--dock {
+  justify-content: flex-end;
+}
+
+.Controller1_Actions--dock > :last-child {
+  min-width: 150px;
+}
+
+.Controller1_PositionEditor {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.Controller1_PreviewTable {
+  display: grid;
+  gap: 8px;
+}
+
+.Controller1_PreviewRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.Controller1_PreviewRow--active {
+  border-color: rgba(90, 187, 255, 0.45);
+}
+
+.Controller1_PreviewRow--emitted {
+  border-color: rgba(89, 191, 64, 0.55);
+  background: rgba(89, 191, 64, 0.08);
+}
+
+.Controller1_PreviewCell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.Controller1_PreviewCell > span,
+.Controller1_PreviewCell > small {
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 11px;
+}
+
+.Controller1_PreviewCell > strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.Controller1_PreviewStatus {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .Controller1_Control--selected {
   border-color: rgba(89, 191, 64, 0.75) !important;
   box-shadow: inset 0 0 0 1px rgba(89, 191, 64, 0.35);
