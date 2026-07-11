@@ -239,15 +239,21 @@ function controlTypeOptions(inputs: InputRef[]): ControlTypeOption[] {
   if (inputs.length === 2 && buttonCount === 2) {
     options.push(
       {
+        id: "switch3-paired",
+        label: "3-position switch (paired)",
+        description: "Two contacts, three positions — typical RC transmitter style.",
+        kind: "switch3",
+      },
+      {
         id: "switch2",
         label: "2-position switch",
-        description: "Two mutually exclusive button positions.",
+        description: "Two inputs; highest active position wins.",
         kind: "switch2",
       },
       {
         id: "push-push",
         label: "Push-push toggle",
-        description: "Two-state toggle switch.",
+        description: "Two-state toggle.",
         kind: "switch2",
       },
     );
@@ -255,8 +261,8 @@ function controlTypeOptions(inputs: InputRef[]): ControlTypeOption[] {
   if (inputs.length === 3 && buttonCount === 3) {
     options.push({
       id: "switch3",
-      label: "3-position switch",
-      description: "Three mutually exclusive button positions.",
+      label: "3-position switch (3 inputs)",
+      description: "RC-style: High beats Center beats Low when contacts overlap.",
       kind: "switch3",
     });
   }
@@ -310,6 +316,44 @@ function buildLogicalControlFromSelection(
         label: labels[index] ?? `Position ${index + 1}`,
         conditions: [{ input, test: "pressed" }],
       })),
+      confidence: 1,
+      confirmed: true,
+    };
+  }
+
+  if (type.id === "switch3-paired") {
+    const [first, second] = inputs;
+    return {
+      id,
+      name,
+      kind: "switch3",
+      sources: inputs,
+      positions: [
+        {
+          id: "low",
+          label: "Low",
+          conditions: [
+            { input: first, test: "pressed" },
+            { input: second, test: "released" },
+          ],
+        },
+        {
+          id: "center",
+          label: "Center",
+          conditions: [
+            { input: first, test: "released" },
+            { input: second, test: "released" },
+          ],
+        },
+        {
+          id: "high",
+          label: "High",
+          conditions: [
+            { input: first, test: "released" },
+            { input: second, test: "pressed" },
+          ],
+        },
+      ],
       confidence: 1,
       confirmed: true,
     };
@@ -1105,7 +1149,7 @@ function GroupedControlModal({
           </section>
           {bindActive && (
             <div className="Controller1_BindBanner">
-              Move a position now. Only that newly moved position is temporarily emitted.
+              Move the switch through each position one at a time. Each new position sends a distinct pulse to the game.
             </div>
           )}
         </div>

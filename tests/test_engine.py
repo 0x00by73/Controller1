@@ -5,11 +5,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
 
 from controller1.engine import MappingEngine
+from controller1.logical_controls import compile_profile
 from controller1.models import (
     Action,
     AxisCalibration,
     Binding,
     InputRef,
+    LogicalControl,
+    LogicalPosition,
     Predicate,
     Profile,
 )
@@ -386,6 +389,77 @@ class MappingEngineTests(unittest.TestCase):
         states = self.engine.logical_control_states("gear")
         self.assertEqual(len(states), 3)
         self.assertTrue(any(item["outputCode"] == "BTN_TRIGGER_HAPPY5" and item["emitted"] for item in states))
+
+
+    def test_bind_assist_pulses_each_exclusive_position(self):
+        outputs = FakeOutputs()
+        engine = MappingEngine(outputs)
+        pinkie = InputRef(1, 293, "BTN_PINKIE")
+        base = InputRef(1, 294, "BTN_BASE")
+        base2 = InputRef(1, 295, "BTN_BASE2")
+        control = LogicalControl(
+            id="sc",
+            name="SC",
+            kind="switch3",
+            sources=[pinkie, base, base2],
+            positions=[
+                LogicalPosition("low", "Low", [Predicate(pinkie, "pressed")], Action("gamepadButton", code="BTN_TRIGGER_HAPPY1")),
+                LogicalPosition("center", "Center", [Predicate(base, "pressed")], Action("gamepadButton", code="BTN_TRIGGER_HAPPY2")),
+                LogicalPosition("high", "High", [Predicate(base2, "pressed")], Action("gamepadButton", code="BTN_TRIGGER_HAPPY3")),
+            ],
+            confidence=1,
+            confirmed=True,
+        )
+        engine.set_profile(compile_profile(Profile(name="P", logical_controls=[control])))
+        engine.start_bind_assist("sc")
+
+        engine.process(1, 293, 1)
+        engine.process(1, 294, 0)
+        engine.process(1, 295, 0)
+        engine.process(1, 294, 1)
+        engine.process(1, 295, 1)
+
+        self.assertEqual(
+            outputs.events,
+            [
+                ("gamepadButton", "BTN_TRIGGER_HAPPY1", True),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY1", False),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY2", True),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY2", False),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY3", True),
+                ("gamepadButton", "BTN_TRIGGER_HAPPY3", False),
+            ],
+        )
+
+    def test_overlapping_switch_positions_resolve_to_highest(self):
+        outputs = FakeOutputs()
+        engine = MappingEngine(outputs)
+        pinkie = InputRef(1, 293, "BTN_PINKIE")
+        base = InputRef(1, 294, "BTN_BASE")
+        base2 = InputRef(1, 295, "BTN_BASE2")
+        control = LogicalControl(
+            id="sc",
+            name="SC",
+            kind="switch3",
+            sources=[pinkie, base, base2],
+            positions=[
+                LogicalPosition("low", "Low", [Predicate(pinkie, "pressed")], Action("gamepadButton", code="BTN_TRIGGER_HAPPY1")),
+                LogicalPosition("center", "Center", [Predicate(base, "pressed")], Action("gamepadButton", code="BTN_TRIGGER_HAPPY2")),
+                LogicalPosition("high", "High", [Predicate(base2, "pressed")], Action("gamepadButton", code="BTN_TRIGGER_HAPPY3")),
+            ],
+            confidence=1,
+            confirmed=True,
+        )
+        engine.set_profile(compile_profile(Profile(name="P", logical_controls=[control])))
+
+        engine.process(1, 293, 0)
+        engine.process(1, 294, 1)
+        engine.process(1, 295, 1)
+
+        self.assertEqual(outputs.events[-1], ("gamepadButton", "BTN_TRIGGER_HAPPY3", True))
+        winner = engine._winning_logical_binding("sc")
+        self.assertIsNotNone(winner)
+        self.assertEqual(winner.action.code, "BTN_TRIGGER_HAPPY3")
 
 
 if __name__ == "__main__":

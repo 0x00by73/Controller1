@@ -18,7 +18,7 @@ class MappingEngine:
         self.output_counts: dict[str, int] = {}
         self.active_passthrough: dict[str, tuple[str, str]] = {}
         self.bind_assist_control_id: str | None = None
-        self.bind_assist_positions: set[str] = set()
+        self.bind_assist_last_binding_id: str | None = None
         self.pipeline: deque[dict[str, Any]] = deque(maxlen=100)
 
     def set_profile(self, profile: Profile) -> None:
@@ -30,11 +30,11 @@ class MappingEngine:
     def start_bind_assist(self, logical_control_id: str) -> None:
         self.release_all()
         self.bind_assist_control_id = logical_control_id
-        self.bind_assist_positions.clear()
+        self.bind_assist_last_binding_id = None
 
     def stop_bind_assist(self) -> None:
         self.bind_assist_control_id = None
-        self.bind_assist_positions.clear()
+        self.bind_assist_last_binding_id = None
 
     def set_default_calibrations(
         self, calibrations: dict[str, AxisCalibration]
@@ -75,6 +75,8 @@ class MappingEngine:
         for binding in self.profile.bindings:
             if binding.action.type == "layer":
                 continue
+            if self._is_exclusive_logical_binding(binding):
+                continue
             should_be_active = binding.layer in active_layers and self._conditions_match(binding)
             was_active = binding.id in self.active_bindings
             is_continuous = binding.action.type in ("gamepadAxis", "mouseMove")
@@ -94,8 +96,6 @@ class MappingEngine:
                 continue
 
             if should_be_active and not was_active:
-                if binding.logical_control_id is not None:
-                    self._deactivate_other_logical_positions(binding)
                 self._activate_action(binding.action)
                 self.active_bindings.add(binding.id)
                 self._record_pipeline(changed, binding, value=value)
@@ -103,18 +103,66 @@ class MappingEngine:
                 self._deactivate_action(binding.action)
                 self.active_bindings.discard(binding.id)
 
-    def _deactivate_other_logical_positions(self, binding: Binding) -> None:
+        self._apply_exclusive_logical_controls(changed)
+
+    def _logical_control(self, control_id: str):
+        return next(
+            (item for item in self.profile.logical_controls if item.id == control_id),
+            None,
+        )
+
+    def _is_exclusive_logical_binding(self, binding: Binding) -> bool:
         if binding.logical_control_id is None:
-            return
-        for other in self.profile.bindings:
-            if (
-                other.logical_control_id == binding.logical_control_id
-                and other.id != binding.id
-                and other.id in self.active_bindings
-                and other.action.type not in ("gamepadAxis", "mouseMove", "layer")
-            ):
-                self._deactivate_action(other.action)
-                self.active_bindings.discard(other.id)
+            return False
+        logical = self._logical_control(binding.logical_control_id)
+        return logical is not None and logical.kind in {"switch2", "switch3"}
+
+    def _logical_position_bindings(self, control_id: str) -> list[Binding]:
+        return [
+            binding
+            for binding in self.profile.bindings
+            if binding.logical_control_id == control_id
+            and ":position:" in (binding.id or "")
+        ]
+
+    def _winning_logical_binding(self, control_id: str) -> Binding | None:
+        logical = self._logical_control(control_id)
+        if logical is None:
+            return None
+        bindings = {
+            binding.id.rsplit(":", 1)[-1]: binding
+            for binding in self._logical_position_bindings(control_id)
+        }
+        for position in reversed(logical.positions):
+            binding = bindings.get(position.id)
+            if binding is not None and self._conditions_match(binding):
+                return binding
+        return None
+
+    def _active_logical_binding(self, control_id: str) -> Binding | None:
+        for binding in self._logical_position_bindings(control_id):
+            if binding.id in self.active_bindings:
+                return binding
+        return None
+
+    def _apply_exclusive_logical_controls(self, changed: InputRef) -> None:
+        seen: set[str] = set()
+        for control in self.profile.logical_controls:
+            if control.kind not in {"switch2", "switch3"} or control.id in seen:
+                continue
+            seen.add(control.id)
+            winner = self._winning_logical_binding(control.id)
+            current = self._active_logical_binding(control.id)
+            if winner is not None and current is not None and winner.id == current.id:
+                continue
+            if current is not None:
+                self._deactivate_action(current.action)
+                self.active_bindings.discard(current.id)
+            if winner is not None:
+                self._activate_action(winner.action)
+                self.active_bindings.add(winner.id)
+                self._record_pipeline(changed, winner, value=1)
+
 
     def logical_control_states(self, control_id: str) -> list[dict[str, Any]]:
         logical = next(
@@ -137,6 +185,11 @@ class MappingEngine:
                 }
             ]
         states: list[dict[str, Any]] = []
+        winner = (
+            self._winning_logical_binding(control_id)
+            if logical.kind in {"switch2", "switch3"}
+            else None
+        )
         for position in logical.positions:
             binding_id = f"logical:{control_id}:position:{position.id}"
             binding = next(
@@ -146,7 +199,13 @@ class MappingEngine:
             if binding is None or binding.action.type in ("gamepadAxis", "mouseMove", "layer"):
                 continue
             matches = self._conditions_match(binding)
-            emitted = binding.id in self.active_bindings and matches
+            emitted = (
+                winner is not None
+                and winner.id == binding.id
+                and binding.id in self.active_bindings
+            ) if logical.kind in {"switch2", "switch3"} else (
+                binding.id in self.active_bindings and matches
+            )
             states.append(
                 {
                     "positionId": position.id,
@@ -237,31 +296,27 @@ class MappingEngine:
         )
 
     def _process_bind_assist(self, changed: InputRef) -> None:
-        relevant = [
-            binding
-            for binding in self.profile.bindings
-            if binding.logical_control_id == self.bind_assist_control_id
-            and binding.action.type not in ("gamepadAxis", "mouseMove", "layer")
-        ]
+        control_id = self.bind_assist_control_id
+        if control_id is None:
+            return
+        logical = self._logical_control(control_id)
+        if logical is None:
+            return
         source_keys = {
-            condition.input.key
-            for binding in relevant
-            for condition in binding.conditions
+            source.key for source in logical.sources
         }
+        for position in logical.positions:
+            for condition in position.conditions:
+                source_keys.add(condition.input.key)
         if changed.key not in source_keys:
             return
-        active = {
-            binding.id for binding in relevant if self._conditions_match(binding)
-        }
-        entered = active - self.bind_assist_positions
-        for binding in relevant:
-            if binding.id not in entered:
-                continue
-            self._deactivate_other_logical_positions(binding)
-            self._activate_action(binding.action)
-            self._deactivate_action(binding.action)
-            self._record_pipeline(changed, binding, value=1, pulse=True)
-        self.bind_assist_positions = active
+        winner = self._winning_logical_binding(control_id)
+        if winner is None or winner.id == self.bind_assist_last_binding_id:
+            return
+        self._activate_action(winner.action)
+        self._deactivate_action(winner.action)
+        self._record_pipeline(changed, winner, value=1, pulse=True)
+        self.bind_assist_last_binding_id = winner.id
 
     def _record_pipeline(
         self,
